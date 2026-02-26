@@ -3,28 +3,54 @@ import sys
 import io
 import requests
 from datetime import datetime, timezone, timedelta
+from zoneinfo import ZoneInfo
 from PIL import Image
 
 # --- Config ---
-ZOOM = 4          # Grid size: 4 = 2200px full disk, 8 = 4400px, 20 = 11000px
-TILE_SIZE = 550   # Each tile is 550x550px
+ZOOM = 4
+TILE_SIZE = 550
 HIMAWARI_BASE = f"https://himawari8.nict.go.jp/img/D531106/{ZOOM}d/{TILE_SIZE}"
 
-# Australia crop: fraction of the full stitched image (tweak if needed)
-# Himawari is centered ~140.7°E, full disk covers ~±60° lat/lon
+ADELAIDE_TZ = ZoneInfo("Australia/Adelaide")
+
+# Australia crop fractions
 CROP_LEFT   = 0.62
 CROP_TOP    = 0.52
 CROP_RIGHT  = 0.82
 CROP_BOTTOM = 0.80
 
 
-def get_timestamp():
-    now = datetime.now(timezone.utc) - timedelta(minutes=30)
-    minute = (now.minute // 10) * 10
-    return now.replace(minute=minute, second=0, microsecond=0)
+def get_noon_timestamp() -> datetime:
+    """
+    Get the most recent noon (Adelaide time) that has passed,
+    rounded to the nearest available 10-minute Himawari interval.
+    Himawari images have ~30 min delay, so we allow for that.
+    """
+    now_utc = datetime.now(timezone.utc)
+    now_adl = now_utc.astimezone(ADELAIDE_TZ)
+
+    # Start with today's noon in Adelaide
+    noon_adl = now_adl.replace(hour=12, minute=0, second=0, microsecond=0)
+
+    # If today's noon hasn't happened yet, use yesterday's
+    if now_adl < noon_adl:
+        noon_adl -= timedelta(days=1)
+
+    # Convert to UTC
+    noon_utc = noon_adl.astimezone(timezone.utc)
+
+    # Round to nearest 10-minute Himawari slot
+    minute = (noon_utc.minute // 10) * 10
+    noon_utc = noon_utc.replace(minute=minute, second=0, microsecond=0)
+
+    # Sanity check: if the slot is somehow in the future (edge case), step back
+    while noon_utc > now_utc - timedelta(minutes=30):
+        noon_utc -= timedelta(minutes=10)
+
+    return noon_utc
 
 
-def fetch_tile(url):
+def fetch_tile(url: str) -> Image.Image:
     r = requests.get(url, timeout=20)
     r.raise_for_status()
     return Image.open(io.BytesIO(r.content))
@@ -33,7 +59,6 @@ def fetch_tile(url):
 def build_australia_image(timestamp: datetime) -> bytes:
     ts_str = timestamp.strftime("%Y/%m/%d/%H%M%S")
 
-    # Determine which tiles overlap the Australia crop region
     col_start = int(CROP_LEFT * ZOOM)
     col_end   = min(int(CROP_RIGHT * ZOOM) + 1, ZOOM)
     row_start = int(CROP_TOP * ZOOM)
@@ -42,19 +67,17 @@ def build_australia_image(timestamp: datetime) -> bytes:
     cols = range(col_start, col_end)
     rows = range(row_start, row_end)
 
-    # Stitch the relevant tiles
     canvas_w = len(cols) * TILE_SIZE
     canvas_h = len(rows) * TILE_SIZE
     canvas = Image.new("RGB", (canvas_w, canvas_h))
 
-    print(f"Fetching {len(cols) * len(rows)} tiles...")
+    print(f"Fetching {len(cols) * len(rows)} tiles for {ts_str}...")
     for ri, row in enumerate(rows):
         for ci, col in enumerate(cols):
             url = f"{HIMAWARI_BASE}/{ts_str}_{col}_{row}.png"
             tile = fetch_tile(url)
             canvas.paste(tile, (ci * TILE_SIZE, ri * TILE_SIZE))
 
-    # Crop to Australia within the stitched canvas
     full_size = ZOOM * TILE_SIZE
     left   = int(CROP_LEFT   * full_size) - col_start * TILE_SIZE
     top    = int(CROP_TOP    * full_size) - row_start * TILE_SIZE
@@ -63,7 +86,6 @@ def build_australia_image(timestamp: datetime) -> bytes:
 
     cropped = canvas.crop((left, top, right, bottom))
 
-    # Save to bytes as JPEG (Discord has 8MB limit)
     buf = io.BytesIO()
     cropped.save(buf, format="JPEG", quality=90)
     buf.seek(0)
@@ -71,14 +93,20 @@ def build_australia_image(timestamp: datetime) -> bytes:
 
 
 def post_to_discord(webhook_url: str, image_bytes: bytes, timestamp: datetime):
-    time_str = timestamp.strftime("%Y-%m-%d %H:%M UTC")
+    # Show both UTC and Adelaide local time in the embed
+    adl_time = timestamp.astimezone(ADELAIDE_TZ)
+    time_str = (
+        f"{adl_time.strftime('%Y-%m-%d %H:%M')} Adelaide time "
+        f"({timestamp.strftime('%H:%M')} UTC)"
+    )
 
+    import json
     payload = {
         "username": "Himawari Satellite",
         "embeds": [
             {
                 "title": "🛰️ Himawari — Australia & Oceania",
-                "description": f"🕐 Approx. capture time: **{time_str}**",
+                "description": f"☀️ Captured at noon: **{time_str}**",
                 "color": 0x1a73e8,
                 "image": {"url": "attachment://himawari_australia.jpg"},
                 "footer": {"text": "Source: NICT Himawari Monitor • himawari8.nict.go.jp"},
@@ -89,7 +117,7 @@ def post_to_discord(webhook_url: str, image_bytes: bytes, timestamp: datetime):
 
     response = requests.post(
         webhook_url,
-        data={"payload_json": str(payload).replace("'", '"')},
+        data={"payload_json": json.dumps(payload)},
         files={"file": ("himawari_australia.jpg", image_bytes, "image/jpeg")},
         timeout=30
     )
@@ -103,13 +131,14 @@ def main():
         print("❌ Error: DISCORD_WEBHOOK_URL not set.")
         sys.exit(1)
 
-    timestamp = get_timestamp()
-    print(f"Fetching image for: {timestamp.strftime('%Y-%m-%d %H:%M UTC')}")
+    timestamp = get_noon_timestamp()
+    adl_time = timestamp.astimezone(ADELAIDE_TZ)
+    print(f"Target: noon Adelaide = {adl_time.strftime('%Y-%m-%d %H:%M %Z')} → {timestamp.strftime('%H:%M UTC')}")
 
     try:
         image_bytes = build_australia_image(timestamp)
-    except requests.HTTPError:
-        print("⚠️  Latest tiles unavailable, trying 10 min earlier...")
+    except requests.HTTPError as e:
+        print(f"⚠️  Tiles unavailable ({e}), trying 10 min earlier...")
         timestamp -= timedelta(minutes=10)
         image_bytes = build_australia_image(timestamp)
 
