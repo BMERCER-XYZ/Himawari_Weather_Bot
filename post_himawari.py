@@ -1,32 +1,81 @@
 import os
 import sys
+import io
 import requests
 from datetime import datetime, timezone, timedelta
+from PIL import Image
 
-HIMAWARI_BASE = "https://himawari8.nict.go.jp/img/D531106/1d/550"
+# --- Config ---
+# 20d = 20x20 grid of 550px tiles = 11,000x11,000px full disk
+# That's extremely large; 8d (4400x4400px) is a practical maximum for Discord
+ZOOM = 8
+TILE_SIZE = 550
+HIMAWARI_BASE = f"https://himawari8.nict.go.jp/img/D531106/{ZOOM}d/{TILE_SIZE}"
 
-def get_timestamp_url(dt: datetime) -> str:
+# Discord's max file upload is 8MB — we'll JPEG compress to fit
+DISCORD_MAX_BYTES = 7 * 1024 * 1024  # 7MB to be safe
+
+
+def get_timestamp_url(dt: datetime, col: int, row: int) -> str:
     minute = (dt.minute // 10) * 10
     ts = dt.strftime(f"%Y/%m/%d/%H{minute:02d}00")
-    return f"{HIMAWARI_BASE}/{ts}_0_0.png"
+    return f"{HIMAWARI_BASE}/{ts}_{col}_{row}.png"
 
-def get_latest_image_url():
-    """Try up to 6 ten-minute slots back until we find a valid image."""
+
+def find_valid_timestamp() -> datetime:
+    """Step back in 10-min increments until tile (0,0) exists."""
     base_time = datetime.now(timezone.utc) - timedelta(minutes=30)
-    
-    for i in range(6):
+    for i in range(12):
         candidate = base_time - timedelta(minutes=10 * i)
-        url = get_timestamp_url(candidate)
-        head = requests.head(url, timeout=10)
-        if head.status_code == 200:
-            print(f"✅ Found valid image: {url}")
-            return url, candidate
+        url = get_timestamp_url(candidate, 0, 0)
+        r = requests.head(url, timeout=10)
+        if r.status_code == 200:
+            print(f"✅ Found valid timestamp: {url}")
+            return candidate
         print(f"⚠️  Not available: {url}")
+    raise RuntimeError("Could not find a valid Himawari image in the last 2 hours.")
 
-    raise RuntimeError("Could not find a valid Himawari image in the last hour.")
 
-def post_to_discord(webhook_url: str, image_url: str, timestamp: datetime):
+def fetch_tile(url: str) -> Image.Image:
+    r = requests.get(url, timeout=20)
+    r.raise_for_status()
+    return Image.open(io.BytesIO(r.content))
+
+
+def build_full_disk(timestamp: datetime) -> bytes:
+    full_size = ZOOM * TILE_SIZE  # e.g. 4400px for ZOOM=8
+    canvas = Image.new("RGB", (full_size, full_size))
+
+    total = ZOOM * ZOOM
+    print(f"Fetching {total} tiles ({ZOOM}x{ZOOM} grid = {full_size}x{full_size}px)...")
+
+    for row in range(ZOOM):
+        for col in range(ZOOM):
+            url = get_timestamp_url(timestamp, col, row)
+            tile = fetch_tile(url)
+            canvas.paste(tile, (col * TILE_SIZE, row * TILE_SIZE))
+            done = row * ZOOM + col + 1
+            print(f"  Tile {done}/{total} ({col},{row})", end="\r")
+
+    print()  # newline after progress
+
+    # Compress to fit Discord's 8MB limit, reducing quality if needed
+    for quality in [95, 85, 75, 60]:
+        buf = io.BytesIO()
+        canvas.save(buf, format="JPEG", quality=quality, optimize=True)
+        size = buf.tell()
+        print(f"  JPEG quality {quality}: {size / 1024 / 1024:.1f}MB")
+        if size <= DISCORD_MAX_BYTES:
+            buf.seek(0)
+            return buf.read()
+
+    raise RuntimeError("Could not compress image small enough for Discord.")
+
+
+def post_to_discord(webhook_url: str, image_bytes: bytes, timestamp: datetime):
+    import json
     time_str = timestamp.strftime("%Y-%m-%d %H:%M UTC")
+    size_mb = len(image_bytes) / 1024 / 1024
 
     payload = {
         "username": "Himawari Satellite",
@@ -34,17 +83,27 @@ def post_to_discord(webhook_url: str, image_url: str, timestamp: datetime):
         "embeds": [
             {
                 "title": "🛰️ Himawari-8/9 Satellite Image",
-                "description": f"Latest full-disk Earth view\n🕐 Approx. capture time: **{time_str}**",
-                "image": {"url": image_url},
+                "description": (
+                    f"Full-disk Earth view at {ZOOM*TILE_SIZE}×{ZOOM*TILE_SIZE}px\n"
+                    f"🕐 Approx. capture time: **{time_str}**"
+                ),
+                "image": {"url": "attachment://himawari.jpg"},
                 "color": 0x1a73e8,
-                "footer": {"text": "Source: NICT Himawari Monitor • himawari8.nict.go.jp"},
+                "footer": {"text": f"Source: NICT Himawari Monitor • {size_mb:.1f}MB"},
                 "url": "https://himawari8.nict.go.jp/en/himawari8-image.htm"
             }
         ]
     }
-    response = requests.post(webhook_url, json=payload, timeout=15)
+
+    response = requests.post(
+        webhook_url,
+        data={"payload_json": json.dumps(payload)},
+        files={"file": ("himawari.jpg", image_bytes, "image/jpeg")},
+        timeout=60
+    )
     response.raise_for_status()
-    print(f"✅ Posted successfully!")
+    print(f"✅ Posted successfully! ({size_mb:.1f}MB)")
+
 
 def main():
     webhook_url = os.environ.get("DISCORD_WEBHOOK_URL")
@@ -52,8 +111,10 @@ def main():
         print("❌ Error: DISCORD_WEBHOOK_URL environment variable not set.")
         sys.exit(1)
 
-    image_url, timestamp = get_latest_image_url()
-    post_to_discord(webhook_url, image_url, timestamp)
+    timestamp = find_valid_timestamp()
+    image_bytes = build_full_disk(timestamp)
+    post_to_discord(webhook_url, image_bytes, timestamp)
+
 
 if __name__ == "__main__":
     main()
