@@ -19,7 +19,7 @@ jobs:
           python-version: '3.12'
 
       - name: Install dependencies
-        run: pip install requests Pillow
+        run: pip install requests
 
       - name: Post Himawari image to Discord
         env:
