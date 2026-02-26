@@ -3,7 +3,7 @@ name: Post Himawari Satellite Image
 on:
   workflow_dispatch:  # Manual trigger from GitHub Actions UI
   schedule:
-    - cron: '0 */3 * * *'  # Optional: also run every 3 hours automatically (remove if unwanted)
+    - cron: '0 */1 * * *'  # Run every 1 hour automatically
 
 jobs:
   post-image:
