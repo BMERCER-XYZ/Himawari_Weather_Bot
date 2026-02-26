@@ -1,0 +1,27 @@
+name: Post Himawari Satellite Image
+
+on:
+  workflow_dispatch:  # Manual trigger from GitHub Actions UI
+  schedule:
+    - cron: '0 */3 * * *'  # Optional: also run every 3 hours automatically (remove if unwanted)
+
+jobs:
+  post-image:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: pip install requests
+
+      - name: Post Himawari image to Discord
+        env:
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+        run: python post_himawari.py
