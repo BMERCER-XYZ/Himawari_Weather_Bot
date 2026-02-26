@@ -3,7 +3,7 @@ import sys
 import requests
 from datetime import datetime, timezone, timedelta
 
-HIMAWARI_BASE = "https://himawari8.nict.go.jp/img/D531106/15d/550"
+HIMAWARI_BASE = "https://himawari8.nict.go.jp/img/D531106/10d/550"
 
 def get_latest_image_url():
     """Get the most recent Himawari full-disk image URL."""
