@@ -14,10 +14,10 @@ HIMAWARI_BASE = f"https://himawari8.nict.go.jp/img/D531106/{ZOOM}d/{TILE_SIZE}"
 ADELAIDE_TZ = ZoneInfo("Australia/Adelaide")
 
 # Australia crop fractions
-CROP_LEFT   = 0.0
-CROP_TOP    = 0.5
-CROP_RIGHT  = 0.0
-CROP_BOTTOM = 0.0
+CROP_LEFT   = 0.01
+CROP_TOP    = 0.55
+CROP_RIGHT  = 0.01
+CROP_BOTTOM = 0.01
 
 
 def get_noon_timestamp() -> datetime:
