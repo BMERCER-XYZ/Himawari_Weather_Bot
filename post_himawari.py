@@ -15,6 +15,34 @@ HIMAWARI_BASE = f"https://himawari8.nict.go.jp/img/D531106/{ZOOM}d/{TILE_SIZE}"
 # Discord's max file upload is 8MB — we'll JPEG compress to fit
 DISCORD_MAX_BYTES = 7 * 1024 * 1024  # 7MB to be safe
 
+# Weather endpoint for the nearest station (Australian BOM JSON)
+WEATHER_URL = "https://www.bom.gov.au/fwo/IDS60801/IDS60801.94146.json"
+
+
+def fetch_weather(url: str) -> dict:
+    """Retrieve the latest observation and pull out the fields we care about.
+
+    The BOM site blocks automated clients unless a browser-like user-agent is
+    supplied, so we include a simple header here. The JSON structure contains a
+    list under ``observations.data``; we take the first entry.
+    """
+    headers = {"User-Agent": "Mozilla/5.0"}
+    r = requests.get(url, timeout=10, headers=headers)
+    r.raise_for_status()
+    data = r.json()
+    obs_list = data.get("observations", {}).get("data", [])
+    if not obs_list:
+        raise RuntimeError("No observations found in weather data")
+    obs = obs_list[0]
+
+    return {
+        "air_temp": obs.get("air_temp"),
+        "apparent_t": obs.get("apparent_t"),
+        "wind_dir": obs.get("wind_dir"),
+        "wind_spd_kmh": obs.get("wind_spd_kmh"),
+        "gust_kmh": obs.get("gust_kmh"),
+    }
+
 
 def get_timestamp_url(dt: datetime, col: int, row: int) -> str:
     minute = (dt.minute // 10) * 10
@@ -77,6 +105,15 @@ def post_to_discord(webhook_url: str, image_bytes: bytes, timestamp: datetime):
     time_str = timestamp.strftime("%Y-%m-%d %H:%M UTC")
     size_mb = len(image_bytes) / 1024 / 1024
 
+    # grab weather information; if it fails we'll let the exception bubble up
+    weather = fetch_weather(WEATHER_URL)
+    # build a short human-readable block for the description
+    weather_str = (
+        f"🌡️ Air: {weather['air_temp']}°C (feels like {weather['apparent_t']}°C)\n"
+        f"💨 Wind: {weather['wind_dir']} at {weather['wind_spd_kmh']} km/h, "
+        f"gusts {weather['gust_kmh']} km/h"
+    )
+
     payload = {
         "username": "Himawari Satellite",
         "avatar_url": "https://himawari8.nict.go.jp/favicon.ico",
@@ -85,7 +122,8 @@ def post_to_discord(webhook_url: str, image_bytes: bytes, timestamp: datetime):
                 "title": "🛰️ Himawari-8/9 Satellite Image",
                 "description": (
                     f"Full-disk Earth view at {ZOOM*TILE_SIZE}×{ZOOM*TILE_SIZE}px\n"
-                    f"🕐 Approx. capture time: **{time_str}**"
+                    f"🕐 Approx. capture time: **{time_str}**\n"
+                    f"{weather_str}"
                 ),
                 "image": {"url": "attachment://himawari.jpg"},
                 "color": 0x1a73e8,
