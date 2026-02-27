@@ -102,8 +102,8 @@ def post_to_discord(webhook_url: str, image_bytes: bytes, timestamp: datetime, w
     time_str = timestamp.strftime("%Y-%m-%d %H:%M UTC")
     size_mb = len(image_bytes) / 1024 / 1024
 
-    # Build the weather field for the embed
-    weather_field = None
+    # Build weather text for message content
+    weather_text = ""
     if weather:
         try:
             air_temp = weather.get("air_temp", "N/A")
@@ -112,17 +112,14 @@ def post_to_discord(webhook_url: str, image_bytes: bytes, timestamp: datetime, w
             wind_spd = weather.get("wind_spd_kmh", "N/A")
             gust = weather.get("gust_kmh", "N/A")
             
-            weather_field = {
-                "name": "🌡️ Weather Conditions",
-                "value": (
-                    f"**Air Temperature:** {air_temp}°C\n"
-                    f"**Apparent Temperature:** {apparent_t}°C\n"
-                    f"**Wind Direction:** {wind_dir}\n"
-                    f"**Wind Speed:** {wind_spd} km/h\n"
-                    f"**Gust Speed:** {gust} km/h"
-                ),
-                "inline": False
-            }
+            weather_text = (
+                "🌡️ **Weather Conditions:**\n"
+                f"Air Temperature: {air_temp}°C\n"
+                f"Apparent Temperature: {apparent_t}°C\n"
+                f"Wind Direction: {wind_dir}\n"
+                f"Wind Speed: {wind_spd} km/h\n"
+                f"Gust Speed: {gust} km/h\n\n"
+            )
         except Exception as e:
             print(f"⚠️  Error formatting weather data: {e}")
 
@@ -139,14 +136,11 @@ def post_to_discord(webhook_url: str, image_bytes: bytes, timestamp: datetime, w
             "url": "https://himawari8.nict.go.jp/en/himawari8-image.htm"
         }
     ]
-    
-    # Add weather field if available
-    if weather_field:
-        embeds[0]["fields"] = [weather_field]
 
     payload = {
         "username": "Himawari Satellite",
         "avatar_url": "https://himawari8.nict.go.jp/favicon.ico",
+        "content": weather_text,
         "embeds": embeds
     }
 
