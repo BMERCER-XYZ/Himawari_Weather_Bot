@@ -2,7 +2,6 @@ import os
 import sys
 import io
 import requests
-import json
 from datetime import datetime, timezone, timedelta
 from PIL import Image
 
@@ -73,81 +72,33 @@ def build_full_disk(timestamp: datetime) -> bytes:
     raise RuntimeError("Could not compress image small enough for Discord.")
 
 
-def fetch_weather_data() -> dict:
-    """Fetch the latest weather data from BOM."""
-    weather_url = "https://www.bom.gov.au/fwo/IDS60801/IDS60801.94146.json"
-    try:
-        r = requests.get(weather_url, timeout=10)
-        r.raise_for_status()
-        data = r.json()
-        # Get the most recent observation (first one in the list)
-        if data.get("observations") and len(data["observations"]["data"]) > 0:
-            observation = data["observations"]["data"][0]
-            return {
-                "air_temp": observation.get("air_temp"),
-                "apparent_t": observation.get("apparent_t"),
-                "wind_dir": observation.get("wind_dir"),
-                "wind_spd_kmh": observation.get("wind_spd_kmh"),
-                "gust_kmh": observation.get("gust_kmh"),
-                "local_time": observation.get("local_date_time_full"),
-            }
-    except Exception as e:
-        print(f"⚠️  Could not fetch weather data: {e}")
-    
-    return None
-
-
-def post_to_discord(webhook_url: str, image_bytes: bytes, timestamp: datetime, weather: dict = None):
+def post_to_discord(webhook_url: str, image_bytes: bytes, timestamp: datetime):
     import json
     time_str = timestamp.strftime("%Y-%m-%d %H:%M UTC")
     size_mb = len(image_bytes) / 1024 / 1024
 
-    # Build weather text for message content
-    weather_text = ""
-    if weather:
-        try:
-            air_temp = weather.get("air_temp", "N/A")
-            apparent_t = weather.get("apparent_t", "N/A")
-            wind_dir = weather.get("wind_dir", "N/A")
-            wind_spd = weather.get("wind_spd_kmh", "N/A")
-            gust = weather.get("gust_kmh", "N/A")
-            
-            weather_text = (
-                "🌡️ **Weather Conditions:**\n"
-                f"Air Temperature: {air_temp}°C\n"
-                f"Apparent Temperature: {apparent_t}°C\n"
-                f"Wind Direction: {wind_dir}\n"
-                f"Wind Speed: {wind_spd} km/h\n"
-                f"Gust Speed: {gust} km/h\n\n"
-            )
-        except Exception as e:
-            print(f"⚠️  Error formatting weather data: {e}")
-
-    embeds = [
-        {
-            "title": "🛰️ Himawari-8/9 Satellite Image",
-            "description": (
-                f"Full-disk Earth view at {ZOOM*TILE_SIZE}×{ZOOM*TILE_SIZE}px\n"
-                f"🕐 Approx. capture time: **{time_str}**"
-            ),
-            "image": {"url": "attachment://himawari.jpg"},
-            "color": 0x1a73e8,
-            "footer": {"text": f"Source: NICT Himawari Monitor • {size_mb:.1f}MB"},
-            "url": "https://himawari8.nict.go.jp/en/himawari8-image.htm"
-        }
-    ]
-
     payload = {
         "username": "Himawari Satellite",
         "avatar_url": "https://himawari8.nict.go.jp/favicon.ico",
-        "content": weather_text,
-        "embeds": embeds
+        "embeds": [
+            {
+                "title": "🛰️ Himawari-8/9 Satellite Image",
+                "description": (
+                    f"Full-disk Earth view at {ZOOM*TILE_SIZE}×{ZOOM*TILE_SIZE}px\n"
+                    f"🕐 Approx. capture time: **{time_str}**"
+                ),
+                "image": {"url": "attachment://himawari.jpg"},
+                "color": 0x1a73e8,
+                "footer": {"text": f"Source: NICT Himawari Monitor • {size_mb:.1f}MB"},
+                "url": "https://himawari8.nict.go.jp/en/himawari8-image.htm"
+            }
+        ]
     }
 
     response = requests.post(
         webhook_url,
         data={"payload_json": json.dumps(payload)},
-        files={"file1": ("himawari.jpg", image_bytes, "image/jpeg")},
+        files={"file": ("himawari.jpg", image_bytes, "image/jpeg")},
         timeout=60
     )
     response.raise_for_status()
@@ -162,8 +113,7 @@ def main():
 
     timestamp = find_valid_timestamp()
     image_bytes = build_full_disk(timestamp)
-    weather = fetch_weather_data()
-    post_to_discord(webhook_url, image_bytes, timestamp, weather)
+    post_to_discord(webhook_url, image_bytes, timestamp)
 
 
 if __name__ == "__main__":
