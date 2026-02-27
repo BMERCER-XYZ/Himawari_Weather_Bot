@@ -146,8 +146,8 @@ def post_to_discord(webhook_url: str, image_bytes: bytes, timestamp: datetime, w
 
     response = requests.post(
         webhook_url,
-        json=payload,
-        files={"himawari.jpg": ("himawari.jpg", image_bytes, "image/jpeg")},
+        data={"payload_json": json.dumps(payload)},
+        files={"file1": ("himawari.jpg", image_bytes, "image/jpeg")},
         timeout=60
     )
     response.raise_for_status()
