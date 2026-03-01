@@ -192,7 +192,9 @@ def make_forecast_image(forecast: dict) -> bytes:
         ax.plot(xs, ys, label=date.isoformat())
         ax.set_ylabel("Temp (°C)")
         ax.legend(loc="upper left")
+        # enforce shared, full-range limits and remove padding
         ax.set_xlim(xmin, xmax)
+        ax.margins(x=0)
     # format bottom axis only
     axs[-1].xaxis.set_major_formatter(mdates.DateFormatter('%m-%d %I:%M %p'))
     fig.autofmt_xdate()

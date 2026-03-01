@@ -42,7 +42,8 @@ The bot will find the most recent Himawari tile set, stitch the image,
   The embed description only includes forecasts for the remainder of the day
   the message is sent, with times in 12‑hour format.  The attached graph shows
   five separate stacked line plots (one per day) spanning the full forecast
-  range.
+  range; each line runs edge-to-edge with no padding so the first and last
+  forecast points sit at the extreme left and right of the image.
 - The BOM JSON feed blocks requests without a browser-like user-agent; the
   script sets one automatically.
 - Forecasts are fetched using the free OpenWeatherMap Current Weather and
