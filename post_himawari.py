@@ -3,6 +3,13 @@ import sys
 import io
 import requests
 from datetime import datetime, timezone, timedelta
+try:
+    from zoneinfo import ZoneInfo
+except Exception:
+    try:
+        from backports.zoneinfo import ZoneInfo
+    except Exception:
+        ZoneInfo = None
 from PIL import Image
 
 # --- Config ---
@@ -158,7 +165,6 @@ def make_forecast_image(forecast: dict) -> bytes:
     """
     import matplotlib.pyplot as plt
     import matplotlib.ticker as ticker
-    from datetime import datetime
 
     entries = forecast.get("entries", [])
     if not entries:
@@ -171,6 +177,12 @@ def make_forecast_image(forecast: dict) -> bytes:
             dt = datetime.strptime(dt_txt, "%Y-%m-%d %H:%M:%S")
         except Exception:
             continue
+        # dt_txt from OpenWeatherMap is in UTC; convert to Australia/Adelaide
+        if ZoneInfo is not None:
+            try:
+                dt = dt.replace(tzinfo=timezone.utc).astimezone(ZoneInfo("Australia/Adelaide"))
+            except Exception:
+                pass
         data_by_date.setdefault(dt.date(), []).append((dt, temp))
 
     if not data_by_date:
@@ -218,17 +230,28 @@ def post_to_discord(webhook_url: str, image_bytes: bytes, timestamp: datetime, o
         if owm_key:
             fc = fetch_forecast(owm_key, weather.get("lat"), weather.get("lon"))
             if fc and fc.get("entries"):
-                # only keep entries for the remainder of the current day
-                today = timestamp.date()
+                # only keep entries for the remainder of the current day in
+                # Australia/Adelaide local time (OpenWeatherMap times are UTC)
                 parts = []
+                adelaide_tz = ZoneInfo("Australia/Adelaide") if ZoneInfo is not None else None
+                if adelaide_tz is not None:
+                    today = timestamp.astimezone(adelaide_tz).date()
+                else:
+                    today = timestamp.date()
+
                 for dt_txt, temp, desc in fc["entries"]:
                     try:
                         dt = datetime.strptime(dt_txt, "%Y-%m-%d %H:%M:%S")
                     except Exception:
                         continue
+                    if adelaide_tz is not None:
+                        try:
+                            dt = dt.replace(tzinfo=timezone.utc).astimezone(adelaide_tz)
+                        except Exception:
+                            pass
                     if dt.date() != today:
                         continue
-                    # convert to 12‑hour time
+                    # convert to 12‑hour time (now in Adelaide tz if available)
                     when = dt.strftime("%I:%M %p").lstrip("0")
                     parts.append(f"{when}: {desc} {temp}°C")
                 if parts:
