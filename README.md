@@ -6,10 +6,10 @@ Adelaide Airport (BOM), plus a short forecast pulled from OpenWeatherMap.
 
 ## Setup
 
-1. Clone the repo and install dependencies (Pillow, requests):
+1. Clone the repo and install dependencies (Pillow, requests, matplotlib):
 
    ```sh
-   python -m pip install --upgrade pillow requests
+   python -m pip install --upgrade pillow requests matplotlib
    ```
 
 2. Create a Discord webhook and add its URL to the `DISCORD_WEBHOOK_URL`
@@ -35,8 +35,9 @@ Adelaide Airport (BOM), plus a short forecast pulled from OpenWeatherMap.
    python post_himawari.py
    ```
 
-   The bot will find the most recent Himawari tile set, stitch the image, fetch
-   the weather and forecast, then post everything to Discord.
+The bot will find the most recent Himawari tile set, stitch the image,
+  fetch the weather and forecast, generate a small line graph of the
+  5‑day/3‑hour forecast, and post everything to Discord (image + graph).
 
 ## Notes
 

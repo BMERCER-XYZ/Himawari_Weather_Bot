@@ -115,17 +115,17 @@ def build_full_disk(timestamp: datetime) -> bytes:
 
 
 def fetch_forecast(api_key: str, lat: float, lon: float) -> dict:
-    """Call the free forecast endpoint and return a few upcoming entries.
+    """Call the free forecast endpoint and return every 3‑hourly entry.
 
-    The forecast API returns a list of 3‑hourly blocks for the next 5 days; we
-    extract the first three blocks so the Discord embed isn't overly long.
+    The forecast API returns a list of 3‑hourly blocks for the next five days.
+    We return the complete list and let the caller decide how much to display
+    in text; the graph generator will use the full list.
     """
     params = {
         "lat": lat,
         "lon": lon,
         "appid": api_key,
         "units": "metric",
-        # we only need the 3‑hour list, not city metadata
     }
     r = requests.get(OPENWEATHER_FORECAST_URL, params=params, timeout=10)
     r.raise_for_status()
@@ -134,9 +134,8 @@ def fetch_forecast(api_key: str, lat: float, lon: float) -> dict:
     if not lst:
         raise RuntimeError("no forecast data returned from OpenWeatherMap")
 
-    # take up to the first three entries (9 hours ahead)
     entries = []
-    for item in lst[:3]:
+    for item in lst:
         dt_txt = item.get("dt_txt", "")
         main = item.get("main", {})
         temp = main.get("temp")
@@ -146,6 +145,55 @@ def fetch_forecast(api_key: str, lat: float, lon: float) -> dict:
         entries.append((dt_txt, temp, desc))
 
     return {"entries": entries}
+
+
+def make_forecast_image(forecast: dict) -> bytes:
+    """Return PNG bytes of a temperature plot for the supplied forecast.
+
+    Each date is drawn as a separate line.  The caller is responsible for
+    catching exceptions in case matplotlib isn't installed or plotting fails.
+    """
+    import matplotlib.pyplot as plt
+    import matplotlib.dates as mdates
+    from datetime import datetime
+
+    entries = forecast.get("entries", [])
+    if not entries:
+        return b""
+
+    # parse timestamps and group by date
+    parsed = []
+    for dt_txt, temp, _ in entries:
+        try:
+            dt = datetime.strptime(dt_txt, "%Y-%m-%d %H:%M:%S")
+        except Exception:
+            continue
+        parsed.append((dt, temp))
+
+    if not parsed:
+        return b""
+
+    data_by_date = {}
+    for dt, temp in parsed:
+        data_by_date.setdefault(dt.date(), []).append((dt, temp))
+
+    fig, ax = plt.subplots()
+    for date, pts in sorted(data_by_date.items()):
+        xs = [t for t, _ in pts]
+        ys = [temp for _, temp in pts]
+        ax.plot(xs, ys, label=date.isoformat())
+
+    ax.set_title("5‑day 3‑hour forecast")
+    ax.set_ylabel("Temp (°C)")
+    ax.legend()
+    ax.xaxis.set_major_formatter(mdates.DateFormatter('%m-%d %H:%M'))
+    fig.autofmt_xdate()
+
+    buf = io.BytesIO()
+    fig.savefig(buf, format="png", bbox_inches='tight')
+    plt.close(fig)
+    buf.seek(0)
+    return buf.read()
 
 
 def post_to_discord(webhook_url: str, image_bytes: bytes, timestamp: datetime, owm_key: str):
@@ -159,16 +207,22 @@ def post_to_discord(webhook_url: str, image_bytes: bytes, timestamp: datetime, o
     # also try to obtain a short forecast from OpenWeatherMap; it's okay if the
     # request fails, we can just omit that part of the message
     forecast_str = ""
+    forecast_image = None
     try:
         if owm_key:
             fc = fetch_forecast(owm_key, weather.get("lat"), weather.get("lon"))
             if fc and fc.get("entries"):
+                # text summary: first six entries (18 hrs) only
                 parts = []
-                for dt_txt, temp, desc in fc["entries"]:
-                    # only show hour and description
+                for dt_txt, temp, desc in fc["entries"][:6]:
                     when = dt_txt.split(" ")[1] if dt_txt else ""
                     parts.append(f"{when}: {desc} {temp}°C")
                 forecast_str = "\n🔮 Upcoming: " + "; ".join(parts)
+                # generate image of entire forecast
+                try:
+                    forecast_image = make_forecast_image(fc)
+                except Exception as ie:
+                    print(f"⚠️  Forecast image generation failed: {ie}")
     except Exception as e:
         # don't crash the whole bot for a forecast hiccup; print for diagnostics
         print(f"⚠️  Forecast lookup failed: {e}")
@@ -200,10 +254,14 @@ def post_to_discord(webhook_url: str, image_bytes: bytes, timestamp: datetime, o
         ]
     }
 
+    files = {"file": ("himawari.jpg", image_bytes, "image/jpeg")}
+    if forecast_image:
+        files["forecast"] = ("forecast.png", forecast_image, "image/png")
+
     response = requests.post(
         webhook_url,
         data={"payload_json": json.dumps(payload)},
-        files={"file": ("himawari.jpg", image_bytes, "image/jpeg")},
+        files=files,
         timeout=60
     )
     response.raise_for_status()
