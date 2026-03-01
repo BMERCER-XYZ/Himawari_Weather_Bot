@@ -41,6 +41,10 @@ def fetch_weather(url: str) -> dict:
         "wind_dir": obs.get("wind_dir"),
         "wind_spd_kmh": obs.get("wind_spd_kmh"),
         "gust_kmh": obs.get("gust_kmh"),
+        "rel_hum": obs.get("rel_hum"),
+        "press": obs.get("press"),
+        "weather": obs.get("weather"),
+        "cloud": obs.get("cloud"),
     }
 
 
@@ -107,11 +111,14 @@ def post_to_discord(webhook_url: str, image_bytes: bytes, timestamp: datetime):
 
     # grab weather information; if it fails we'll let the exception bubble up
     weather = fetch_weather(WEATHER_URL)
-    # build a short human-readable block for the description
+    # build a short human-readable block for the description; use .get() to
+    # avoid KeyError if any field is missing
     weather_str = (
-        f"🌡️ Air: {weather['air_temp']}°C (feels like {weather['apparent_t']}°C)\n"
-        f"💨 Wind: {weather['wind_dir']} at {weather['wind_spd_kmh']} km/h, "
-        f"gusts {weather['gust_kmh']} km/h"
+        f"🌡️ Air: {weather.get('air_temp','-')}°C (feels like {weather.get('apparent_t','-')}°C)\n"
+        f"💧 Humidity: {weather.get('rel_hum','-')}%  Pressure: {weather.get('press','-')} hPa\n"
+        f"☁️ Sky: {weather.get('cloud','-')} — {weather.get('weather','-')}\n"
+        f"💨 Wind: {weather.get('wind_dir','-')} at {weather.get('wind_spd_kmh','-')} km/h, "
+        f"gusts {weather.get('gust_kmh','-')} km/h"
     )
 
     payload = {
