@@ -215,8 +215,13 @@ def main():
 
     owm_key = os.environ.get(OPENWEATHER_KEY_ENV)
     if not owm_key:
-        print(f"❌ Error: {OPENWEATHER_KEY_ENV} environment variable not set.")
-        sys.exit(1)
+        # don't treat this as a fatal error; the bot will still post the image
+        # and current observation but omit the OpenWeatherMap forecast.  When
+        # running in GitHub Actions you must map the repo secret yourself,
+        # e.g. ``env: OPENWEATHER_API_KEY: ${{ secrets.OPENWEATHER_API_KEY }}``.
+        print(f"⚠️  Warning: {OPENWEATHER_KEY_ENV} environment variable not set; "
+              "forecast will be skipped.")
+        owm_key = ""
 
     timestamp = find_valid_timestamp()
     image_bytes = build_full_disk(timestamp)
