@@ -176,24 +176,30 @@ def make_forecast_image(forecast: dict) -> bytes:
     if not data_by_date:
         return b""
 
-    fig, ax = plt.subplots(figsize=(10, 6))
-    # x axis is hour of day (0–24)
-    for date, pts in sorted(data_by_date.items()):
+    # create a subplot for each date stacked vertically, sharing the x-axis
+    dates = sorted(data_by_date.keys())
+    fig, axs = plt.subplots(nrows=len(dates), sharex=True, figsize=(10, 2*len(dates)))
+    if len(dates) == 1:
+        axs = [axs]
+
+    for ax, date in zip(axs, dates):
+        pts = data_by_date[date]
         xs = [(dt.hour + dt.minute/60) for dt, _ in pts]
         ys = [temp for _, temp in pts]
         ax.plot(xs, ys, label=date.isoformat())
+        ax.set_ylabel("Temp (°C)")
+        ax.legend(loc="upper right")
+        ax.set_xlim(0, 24)
+        ax.margins(x=0)
 
-    ax.set_xlim(0, 24)
-    ax.set_xlabel("Hour of day")
-    ax.set_ylabel("Temp (°C)")
-    ax.set_title("5‑day 3‑hour forecast (hours of day)")
-    ax.legend(loc="upper right")
-
-    # ticks every 3 hours, formatted to 12‑hour with am/pm
-    ax.xaxis.set_major_locator(ticker.MultipleLocator(3))
-    ax.xaxis.set_major_formatter(ticker.FuncFormatter(
+    # shared x-axis formatting: hour-only ticks
+    axs[-1].set_xlabel("Hour of day")
+    axs[-1].xaxis.set_major_locator(ticker.MultipleLocator(3))
+    axs[-1].xaxis.set_major_formatter(ticker.FuncFormatter(
         lambda x, pos: f"{int(x)%12 or 12}{'AM' if x<12 or x>=24 else 'PM'}"
     ))
+
+    fig.suptitle("5‑day 3‑hour forecast (hours of day)")
 
     buf = io.BytesIO()
     fig.savefig(buf, format="png", bbox_inches='tight')
