@@ -177,17 +177,26 @@ def make_forecast_image(forecast: dict) -> bytes:
     for dt, temp in parsed:
         data_by_date.setdefault(dt.date(), []).append((dt, temp))
 
-    fig, ax = plt.subplots()
-    for date, pts in sorted(data_by_date.items()):
+    # create one subplot per date, stacked vertically, sharing x-axis
+    dates = sorted(data_by_date.keys())
+    fig, axs = plt.subplots(nrows=len(dates), sharex=True, figsize=(8, 2*len(dates)))
+    if len(dates) == 1:
+        axs = [axs]
+    # determine global x-limits
+    all_x = [dt for dt, _ in parsed]
+    xmin, xmax = min(all_x), max(all_x)
+    for ax, date in zip(axs, dates):
+        pts = data_by_date[date]
         xs = [t for t, _ in pts]
         ys = [temp for _, temp in pts]
         ax.plot(xs, ys, label=date.isoformat())
-
-    ax.set_title("5‑day 3‑hour forecast")
-    ax.set_ylabel("Temp (°C)")
-    ax.legend()
-    ax.xaxis.set_major_formatter(mdates.DateFormatter('%m-%d %H:%M'))
+        ax.set_ylabel("Temp (°C)")
+        ax.legend(loc="upper left")
+        ax.set_xlim(xmin, xmax)
+    # format bottom axis only
+    axs[-1].xaxis.set_major_formatter(mdates.DateFormatter('%m-%d %I:%M %p'))
     fig.autofmt_xdate()
+    fig.suptitle("5‑day 3‑hour forecast")
 
     buf = io.BytesIO()
     fig.savefig(buf, format="png", bbox_inches='tight')
@@ -212,13 +221,22 @@ def post_to_discord(webhook_url: str, image_bytes: bytes, timestamp: datetime, o
         if owm_key:
             fc = fetch_forecast(owm_key, weather.get("lat"), weather.get("lon"))
             if fc and fc.get("entries"):
-                # text summary: first six entries (18 hrs) only
+                # only keep entries for the remainder of the current day
+                today = timestamp.date()
                 parts = []
-                for dt_txt, temp, desc in fc["entries"][:6]:
-                    when = dt_txt.split(" ")[1] if dt_txt else ""
+                for dt_txt, temp, desc in fc["entries"]:
+                    try:
+                        dt = datetime.strptime(dt_txt, "%Y-%m-%d %H:%M:%S")
+                    except Exception:
+                        continue
+                    if dt.date() != today:
+                        continue
+                    # convert to 12‑hour time
+                    when = dt.strftime("%I:%M %p").lstrip("0")
                     parts.append(f"{when}: {desc} {temp}°C")
-                forecast_str = "\n🔮 Upcoming: " + "; ".join(parts)
-                # generate image of entire forecast
+                if parts:
+                    forecast_str = "\n🔮 Today: " + "; ".join(parts)
+                # generate full-image of entire 5-day forecast
                 try:
                     forecast_image = make_forecast_image(fc)
                 except Exception as ie:
