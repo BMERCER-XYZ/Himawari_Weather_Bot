@@ -18,6 +18,13 @@ DISCORD_MAX_BYTES = 7 * 1024 * 1024  # 7MB to be safe
 # Weather endpoint for the nearest station (Australian BOM JSON)
 WEATHER_URL = "https://www.bom.gov.au/fwo/IDS60801/IDS60801.94146.json"
 
+# OpenWeatherMap one‑call endpoint (used for forecast)
+OPENWEATHER_URL = "https://api.openweathermap.org/data/2.5/onecall"
+
+# environment variable name used for storing the OWM API key; in a repo
+# this should be set as a secret named this value (e.g. in GitHub Actions).
+OPENWEATHER_KEY_ENV = "OPENWEATHER_API_KEY"
+
 
 def fetch_weather(url: str) -> dict:
     """Retrieve the latest observation and pull out the fields we care about.
@@ -45,6 +52,8 @@ def fetch_weather(url: str) -> dict:
         "press": obs.get("press"),
         "weather": obs.get("weather"),
         "cloud": obs.get("cloud"),
+        "lat": obs.get("lat"),
+        "lon": obs.get("lon"),
     }
 
 
@@ -104,13 +113,63 @@ def build_full_disk(timestamp: datetime) -> bytes:
     raise RuntimeError("Could not compress image small enough for Discord.")
 
 
-def post_to_discord(webhook_url: str, image_bytes: bytes, timestamp: datetime):
+def fetch_forecast(api_key: str, lat: float, lon: float) -> dict:
+    """Return a very small summary from OpenWeatherMap's One‑Call API.
+
+    We only pull the first daily entry (today) because the bot sends a single
+    message; callers can decide how to format the result.  The API key is
+    expected to already be configured as an environment variable and passed
+    through by the caller.
+    """
+    params = {
+        "lat": lat,
+        "lon": lon,
+        "appid": api_key,
+        "units": "metric",
+        "exclude": "minutely,alerts",
+    }
+    r = requests.get(OPENWEATHER_URL, params=params, timeout=10)
+    r.raise_for_status()
+    data = r.json()
+    daily = data.get("daily", [])
+    if not daily:
+        raise RuntimeError("no forecast data returned from OpenWeatherMap")
+    today = daily[0]
+    temp = today.get("temp", {})
+    weather_desc = ""
+    if today.get("weather"):
+        weather_desc = today["weather"][0].get("description", "")
+
+    return {
+        "temp_min": temp.get("min"),
+        "temp_max": temp.get("max"),
+        "description": weather_desc,
+    }
+
+
+def post_to_discord(webhook_url: str, image_bytes: bytes, timestamp: datetime, owm_key: str):
     import json
     time_str = timestamp.strftime("%Y-%m-%d %H:%M UTC")
     size_mb = len(image_bytes) / 1024 / 1024
 
     # grab weather information; if it fails we'll let the exception bubble up
     weather = fetch_weather(WEATHER_URL)
+
+    # also try to obtain a short forecast from OpenWeatherMap; it's okay if the
+    # request fails, we can just omit that part of the message
+    forecast_str = ""
+    try:
+        if owm_key:
+            fc = fetch_forecast(owm_key, weather.get("lat"), weather.get("lon"))
+            if fc:
+                forecast_str = (
+                    f"\n🔮 Forecast: {fc.get('description','-').capitalize()} "
+                    f"{fc.get('temp_min','-')}–{fc.get('temp_max','-')}°C"
+                )
+    except Exception as e:
+        # don't crash the whole bot for a forecast hiccup; print for diagnostics
+        print(f"⚠️  Forecast lookup failed: {e}")
+
     # build a short human-readable block for the description; use .get() to
     # avoid KeyError if any field is missing
     weather_str = (
@@ -128,7 +187,7 @@ def post_to_discord(webhook_url: str, image_bytes: bytes, timestamp: datetime):
             {
                 "title": "Himawari Weather Bot 🌐",
                 "description": (
-                    f"{weather_str}"
+                    f"{weather_str}{forecast_str}"
                 ),
                 "image": {"url": "attachment://himawari.jpg"},
                 "color": 0x1a73e8,
@@ -154,9 +213,14 @@ def main():
         print("❌ Error: DISCORD_WEBHOOK_URL environment variable not set.")
         sys.exit(1)
 
+    owm_key = os.environ.get(OPENWEATHER_KEY_ENV)
+    if not owm_key:
+        print(f"❌ Error: {OPENWEATHER_KEY_ENV} environment variable not set.")
+        sys.exit(1)
+
     timestamp = find_valid_timestamp()
     image_bytes = build_full_disk(timestamp)
-    post_to_discord(webhook_url, image_bytes, timestamp)
+    post_to_discord(webhook_url, image_bytes, timestamp, owm_key)
 
 
 if __name__ == "__main__":
