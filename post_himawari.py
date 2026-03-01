@@ -18,8 +18,9 @@ DISCORD_MAX_BYTES = 7 * 1024 * 1024  # 7MB to be safe
 # Weather endpoint for the nearest station (Australian BOM JSON)
 WEATHER_URL = "https://www.bom.gov.au/fwo/IDS60801/IDS60801.94146.json"
 
-# OpenWeatherMap one‑call endpoint (used for forecast)
-OPENWEATHER_URL = "https://api.openweathermap.org/data/2.5/onecall"
+# OpenWeatherMap endpoints
+# - free "Current weather and forecasts" API for 3‑hourly 5‑day forecasts
+OPENWEATHER_FORECAST_URL = "https://api.openweathermap.org/data/2.5/forecast"
 
 # environment variable name used for storing the OWM API key; in a repo
 # this should be set as a secret named this value (e.g. in GitHub Actions).
@@ -114,37 +115,37 @@ def build_full_disk(timestamp: datetime) -> bytes:
 
 
 def fetch_forecast(api_key: str, lat: float, lon: float) -> dict:
-    """Return a very small summary from OpenWeatherMap's One‑Call API.
+    """Call the free forecast endpoint and return a few upcoming entries.
 
-    We only pull the first daily entry (today) because the bot sends a single
-    message; callers can decide how to format the result.  The API key is
-    expected to already be configured as an environment variable and passed
-    through by the caller.
+    The forecast API returns a list of 3‑hourly blocks for the next 5 days; we
+    extract the first three blocks so the Discord embed isn't overly long.
     """
     params = {
         "lat": lat,
         "lon": lon,
         "appid": api_key,
         "units": "metric",
-        "exclude": "minutely,alerts",
+        # we only need the 3‑hour list, not city metadata
     }
-    r = requests.get(OPENWEATHER_URL, params=params, timeout=10)
+    r = requests.get(OPENWEATHER_FORECAST_URL, params=params, timeout=10)
     r.raise_for_status()
     data = r.json()
-    daily = data.get("daily", [])
-    if not daily:
+    lst = data.get("list", [])
+    if not lst:
         raise RuntimeError("no forecast data returned from OpenWeatherMap")
-    today = daily[0]
-    temp = today.get("temp", {})
-    weather_desc = ""
-    if today.get("weather"):
-        weather_desc = today["weather"][0].get("description", "")
 
-    return {
-        "temp_min": temp.get("min"),
-        "temp_max": temp.get("max"),
-        "description": weather_desc,
-    }
+    # take up to the first three entries (9 hours ahead)
+    entries = []
+    for item in lst[:3]:
+        dt_txt = item.get("dt_txt", "")
+        main = item.get("main", {})
+        temp = main.get("temp")
+        desc = ""
+        if item.get("weather"):
+            desc = item["weather"][0].get("description", "")
+        entries.append((dt_txt, temp, desc))
+
+    return {"entries": entries}
 
 
 def post_to_discord(webhook_url: str, image_bytes: bytes, timestamp: datetime, owm_key: str):
@@ -161,11 +162,13 @@ def post_to_discord(webhook_url: str, image_bytes: bytes, timestamp: datetime, o
     try:
         if owm_key:
             fc = fetch_forecast(owm_key, weather.get("lat"), weather.get("lon"))
-            if fc:
-                forecast_str = (
-                    f"\n🔮 Forecast: {fc.get('description','-').capitalize()} "
-                    f"{fc.get('temp_min','-')}–{fc.get('temp_max','-')}°C"
-                )
+            if fc and fc.get("entries"):
+                parts = []
+                for dt_txt, temp, desc in fc["entries"]:
+                    # only show hour and description
+                    when = dt_txt.split(" ")[1] if dt_txt else ""
+                    parts.append(f"{when}: {desc} {temp}°C")
+                forecast_str = "\n🔮 Upcoming: " + "; ".join(parts)
     except Exception as e:
         # don't crash the whole bot for a forecast hiccup; print for diagnostics
         print(f"⚠️  Forecast lookup failed: {e}")

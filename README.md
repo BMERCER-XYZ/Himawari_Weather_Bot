@@ -42,8 +42,9 @@ Adelaide Airport (BOM), plus a short forecast pulled from OpenWeatherMap.
 
 - The BOM JSON feed blocks requests without a browser-like user-agent; the
   script sets one automatically.
-- Forecasts are fetched using the OpenWeatherMap One Call API. If the forecast
-  request fails the bot will still post the satellite image and current
-  observation.
+- Forecasts are fetched using the free OpenWeatherMap Current Weather and
+  Forecasts API (`/forecast` endpoint) which returns 3‑hourly data for the
+  next five days. If the forecast request fails the bot will still post the
+  satellite image and current observation.
 
 Happy meteorology! 🌤️
