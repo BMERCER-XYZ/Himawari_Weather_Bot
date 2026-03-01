@@ -150,11 +150,14 @@ def fetch_forecast(api_key: str, lat: float, lon: float) -> dict:
 def make_forecast_image(forecast: dict) -> bytes:
     """Return PNG bytes of a temperature plot for the supplied forecast.
 
-    Each date is drawn as a separate line.  The caller is responsible for
-    catching exceptions in case matplotlib isn't installed or plotting fails.
+    Each day is plotted as a separate line on a *shared* x-axis.  The x-axis
+    shows only the time of day (e.g. 12 AM, 3 AM, …) and all lines overlap
+    vertically so that the viewer can compare temperatures at the same hour on
+    different days.  This matches the user request for graphs "stacked on top of
+    each other" and a common hour-only axis.
     """
     import matplotlib.pyplot as plt
-    import matplotlib.dates as mdates
+    import matplotlib.ticker as ticker
     from datetime import datetime
 
     entries = forecast.get("entries", [])
@@ -162,43 +165,35 @@ def make_forecast_image(forecast: dict) -> bytes:
         return b""
 
     # parse timestamps and group by date
-    parsed = []
+    data_by_date = {}
     for dt_txt, temp, _ in entries:
         try:
             dt = datetime.strptime(dt_txt, "%Y-%m-%d %H:%M:%S")
         except Exception:
             continue
-        parsed.append((dt, temp))
-
-    if not parsed:
-        return b""
-
-    data_by_date = {}
-    for dt, temp in parsed:
         data_by_date.setdefault(dt.date(), []).append((dt, temp))
 
-    # create one subplot per date, stacked vertically, sharing x-axis
-    dates = sorted(data_by_date.keys())
-    fig, axs = plt.subplots(nrows=len(dates), sharex=True, figsize=(8, 2*len(dates)))
-    if len(dates) == 1:
-        axs = [axs]
-    # determine global x-limits
-    all_x = [dt for dt, _ in parsed]
-    xmin, xmax = min(all_x), max(all_x)
-    for ax, date in zip(axs, dates):
-        pts = data_by_date[date]
-        xs = [t for t, _ in pts]
+    if not data_by_date:
+        return b""
+
+    fig, ax = plt.subplots(figsize=(10, 6))
+    # x axis is hour of day (0–24)
+    for date, pts in sorted(data_by_date.items()):
+        xs = [(dt.hour + dt.minute/60) for dt, _ in pts]
         ys = [temp for _, temp in pts]
         ax.plot(xs, ys, label=date.isoformat())
-        ax.set_ylabel("Temp (°C)")
-        ax.legend(loc="upper left")
-        # enforce shared, full-range limits and remove padding
-        ax.set_xlim(xmin, xmax)
-        ax.margins(x=0)
-    # format bottom axis only
-    axs[-1].xaxis.set_major_formatter(mdates.DateFormatter('%m-%d %I:%M %p'))
-    fig.autofmt_xdate()
-    fig.suptitle("5‑day 3‑hour forecast")
+
+    ax.set_xlim(0, 24)
+    ax.set_xlabel("Hour of day")
+    ax.set_ylabel("Temp (°C)")
+    ax.set_title("5‑day 3‑hour forecast (hours of day)")
+    ax.legend(loc="upper right")
+
+    # ticks every 3 hours, formatted to 12‑hour with am/pm
+    ax.xaxis.set_major_locator(ticker.MultipleLocator(3))
+    ax.xaxis.set_major_formatter(ticker.FuncFormatter(
+        lambda x, pos: f"{int(x)%12 or 12}{'AM' if x<12 or x>=24 else 'PM'}"
+    ))
 
     buf = io.BytesIO()
     fig.savefig(buf, format="png", bbox_inches='tight')

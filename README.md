@@ -40,10 +40,11 @@ The bot will find the most recent Himawari tile set, stitch the image,
   5‑day/3‑hour forecast, and post everything to Discord (image + graph).
 
   The embed description only includes forecasts for the remainder of the day
-  the message is sent, with times in 12‑hour format.  The attached graph shows
-  five separate stacked line plots (one per day) spanning the full forecast
-  range; each line runs edge-to-edge with no padding so the first and last
-  forecast points sit at the extreme left and right of the image.
+  the message is sent, with times in 12‑hour format.  The attached graph
+  overlays all five days on a single set of axes – each day’s line is drawn on
+  top of the others – and the shared x‑axis is hour‑of‑day only (12 AM, 3 AM,
+  …).  Lines span left-to-right with no padding so the earliest and latest
+  points sit at the image edges.
 - The BOM JSON feed blocks requests without a browser-like user-agent; the
   script sets one automatically.
 - Forecasts are fetched using the free OpenWeatherMap Current Weather and
