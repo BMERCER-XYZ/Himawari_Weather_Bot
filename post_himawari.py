@@ -122,14 +122,12 @@ def post_to_discord(webhook_url: str, image_bytes: bytes, timestamp: datetime):
     )
 
     payload = {
-        "username": "Himawari Satellite",
+        "username": "Himawari Weather Bot 🌐",
         "avatar_url": "https://himawari8.nict.go.jp/favicon.ico",
         "embeds": [
             {
-                "title": "🛰️ Himawari-8/9 Satellite Image",
+                "title": "Himawari Weather Bot 🌐",
                 "description": (
-                    f"Full-disk Earth view at {ZOOM*TILE_SIZE}×{ZOOM*TILE_SIZE}px\n"
-                    f"🕐 Approx. capture time: **{time_str}**\n"
                     f"{weather_str}"
                 ),
                 "image": {"url": "attachment://himawari.jpg"},
