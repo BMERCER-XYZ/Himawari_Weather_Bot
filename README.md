@@ -41,9 +41,10 @@ The bot will find the most recent Himawari tile set, stitch the image,
 
   The embed description only includes forecasts for the remainder of the day
   the message is sent, with times in 12‑hour format.  The attached graph
-  stacks five separate plots vertically; each day has its own y-axis but they
-  all share a common hour‑of‑day x-axis (12 AM, 3 AM, …).  Every line spans
-  the full width with no horizontal padding.
+  overlays all five days on a single set of axes – each day’s line is drawn on
+  top of the others – and the shared x‑axis is hour‑of‑day only (12 AM, 3 AM,
+  …).  Lines span left-to-right with no padding so the earliest and latest
+  points sit at the image edges.
 - The BOM JSON feed blocks requests without a browser-like user-agent; the
   script sets one automatically.
 - Forecasts are fetched using the free OpenWeatherMap Current Weather and
