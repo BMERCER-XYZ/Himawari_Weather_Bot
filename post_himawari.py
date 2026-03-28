@@ -2,6 +2,8 @@ import os
 import sys
 import io
 import requests
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 from datetime import datetime, timezone, timedelta
 try:
     from zoneinfo import ZoneInfo
@@ -11,6 +13,11 @@ except Exception:
     except Exception:
         ZoneInfo = None
 from PIL import Image
+
+session = requests.Session()
+retries = Retry(total=5, backoff_factor=1, status_forcelist=[500, 502, 503, 504])
+session.mount('http://', HTTPAdapter(max_retries=retries))
+session.mount('https://', HTTPAdapter(max_retries=retries))
 
 # --- Config ---
 # 20d = 20x20 grid of 550px tiles = 11,000x11,000px full disk
@@ -42,7 +49,7 @@ def fetch_weather(url: str) -> dict:
     list under ``observations.data``; we take the first entry.
     """
     headers = {"User-Agent": "Mozilla/5.0"}
-    r = requests.get(url, timeout=10, headers=headers)
+    r = session.get(url, timeout=10, headers=headers)
     r.raise_for_status()
     data = r.json()
     obs_list = data.get("observations", {}).get("data", [])
@@ -77,7 +84,7 @@ def find_valid_timestamp() -> datetime:
     for i in range(12):
         candidate = base_time - timedelta(minutes=10 * i)
         url = get_timestamp_url(candidate, 0, 0)
-        r = requests.head(url, timeout=10)
+        r = session.head(url, timeout=10)
         if r.status_code == 200:
             print(f"✅ Found valid timestamp: {url}")
             return candidate
@@ -86,7 +93,7 @@ def find_valid_timestamp() -> datetime:
 
 
 def fetch_tile(url: str) -> Image.Image:
-    r = requests.get(url, timeout=20)
+    r = session.get(url, timeout=20)
     r.raise_for_status()
     return Image.open(io.BytesIO(r.content))
 
@@ -134,7 +141,7 @@ def fetch_forecast(api_key: str, lat: float, lon: float) -> dict:
         "appid": api_key,
         "units": "metric",
     }
-    r = requests.get(OPENWEATHER_FORECAST_URL, params=params, timeout=10)
+    r = session.get(OPENWEATHER_FORECAST_URL, params=params, timeout=10)
     r.raise_for_status()
     data = r.json()
     lst = data.get("list", [])
@@ -296,7 +303,7 @@ def post_to_discord(webhook_url: str, image_bytes: bytes, timestamp: datetime, o
     if forecast_image:
         files["forecast"] = ("forecast.png", forecast_image, "image/png")
 
-    response = requests.post(
+    response = session.post(
         webhook_url,
         data={"payload_json": json.dumps(payload)},
         files=files,
