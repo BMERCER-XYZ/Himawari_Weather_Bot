@@ -1,6 +1,7 @@
 import os
 import sys
 import io
+import json
 import requests
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
@@ -217,14 +218,40 @@ def make_quad_forecast_image(forecast: dict) -> bytes:
             current_time = datetime.now(timezone.utc).astimezone(adelaide_tz).replace(tzinfo=None)
             current_date = current_time.date()
             start_of_day = datetime(current_date.year, current_date.month, current_date.day)
-            
-            # Fetch data for the current day only (up to midnight roughly)
+
+            # Load past forecast data if it exists
+            cache_file = "hourly_forecast_cache.json"
+            try:
+                with open(cache_file, "r") as f:
+                    forecast_cache = json.load(f)
+            except (FileNotFoundError, json.JSONDecodeError):
+                forecast_cache = {}
+
+            # Add new data to cache
             for h in data.get('data', []):
-                dt = datetime.fromisoformat(h['time'].replace('Z', '+00:00'))
+                forecast_cache[h['time']] = h['temp']
+
+            # Optional: Clean up cache entries older than yesterday
+            keys_to_delete = []
+            for time_str in forecast_cache.keys():
+                dt = datetime.fromisoformat(time_str.replace('Z', '+00:00'))
+                dt = dt.astimezone(adelaide_tz).replace(tzinfo=None)
+                if dt.date() < current_date - timedelta(days=1):
+                    keys_to_delete.append(time_str)
+            for k in keys_to_delete:
+                del forecast_cache[k]
+
+            # Save the updated cache
+            with open(cache_file, "w") as f:
+                json.dump(forecast_cache, f, indent=2)
+
+            # Fetch data for the current day only (up to midnight roughly)
+            for time_str, temp in sorted(forecast_cache.items()):
+                dt = datetime.fromisoformat(time_str.replace('Z', '+00:00'))
                 dt = dt.astimezone(adelaide_tz).replace(tzinfo=None)
                 if dt.date() == current_date or (dt.date() == current_date + timedelta(days=1) and dt.hour == 0):
                     hours.append(dt)
-                    temps.append(h['temp'])
+                    temps.append(temp)
             if hours:
                 fig2, ax2 = plt.subplots(figsize=(8, 5.12), dpi=100)
                 ax2.plot(hours, temps, marker='o', linestyle='-', color='#ff7f0e')
