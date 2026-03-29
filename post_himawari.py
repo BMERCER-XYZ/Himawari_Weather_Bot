@@ -160,19 +160,14 @@ def fetch_forecast() -> dict:
     return {"entries": entries}
 
 
-def make_forecast_image(forecast: dict) -> bytes:
-    """Return PNG bytes of a temperature plot for the supplied BOM forecast.
-    
-    Plots a 7-day Min and Max temperature line graph.
-    """
+def make_quad_forecast_image(forecast: dict) -> bytes:
+    """Return PNG bytes of a 2x2 grid containing the temperature plots and radar images."""
     import matplotlib.pyplot as plt
-    import matplotlib.ticker as ticker
     import matplotlib.dates as mdates
+    import re
 
+    # 1. GENERATE 7-DAY PLOT (Bottom Left)
     entries = forecast.get("entries", [])
-    if not entries:
-        return b""
-
     dts = []
     mins = []
     maxs = []
@@ -182,41 +177,107 @@ def make_forecast_image(forecast: dict) -> bytes:
             dt = datetime.fromisoformat(entry["dt_txt"])
         except Exception:
             continue
-            
-        # BOM might omit min Temp for the current 'rest-of' day
-        # we'll plot only those that have max temp
         if entry["max"] is not None:
             dts.append(dt)
-            mins.append(entry["min"] if entry["min"] is not None else entry["max"] - 5) # Fallback if min is missing
+            mins.append(entry["min"] if entry["min"] is not None else entry["max"] - 5)
             maxs.append(entry["max"])
 
-    if not dts:
-        return b""
+    if dts:
+        fig1, ax1 = plt.subplots(figsize=(8, 5.12), dpi=100)
+        ax1.plot(dts, maxs, marker='o', linestyle='-', color='#d62728', label='Max Temp (°C)')
+        ax1.plot(dts, mins, marker='o', linestyle='-', color='#1f77b4', label='Min Temp (°C)')
+        ax1.fill_between(dts, mins, maxs, color='gray', alpha=0.1)
+        ax1.set_xlabel("Date")
+        ax1.set_ylabel("Temp (°C)")
+        ax1.set_title("7‑Day Temperature Forecast")
+        ax1.legend(loc="upper right")
+        ax1.xaxis.set_major_formatter(mdates.DateFormatter('%A\n%d %b'))
+        ax1.xaxis.set_major_locator(mdates.DayLocator())
+        fig1.autofmt_xdate(rotation=0, ha='center')
+        fig1.tight_layout()
+        buf1 = io.BytesIO()
+        fig1.savefig(buf1, format="png")
+        plt.close(fig1)
+        buf1.seek(0)
+        img_7day = Image.open(buf1).convert("RGB").resize((800, 512))
+    else:
+        img_7day = Image.new("RGB", (800, 512), "white")
 
-    fig, ax = plt.subplots(figsize=(10, 6))
-    
-    # Plot Min and Max temperature lines
-    ax.plot(dts, maxs, marker='o', linestyle='-', color='#d62728', label='Max Temp (°C)')
-    ax.plot(dts, mins, marker='o', linestyle='-', color='#1f77b4', label='Min Temp (°C)')
-    
-    # Shade the region between min and max
-    ax.fill_between(dts, mins, maxs, color='gray', alpha=0.1)
+    # 2. GENERATE HOURLY PLOT (Top Left)
+    img_hourly = Image.new("RGB", (800, 512), "white")
+    try:
+        r = session.get('https://api.weather.bom.gov.au/v1/locations/r3gx2f/forecasts/hourly', headers={"User-Agent": "Mozilla/5.0"})
+        if r.status_code == 200:
+            data = r.json()
+            hours = []
+            temps = []
+            adelaide_tz = ZoneInfo("Australia/Adelaide") if ZoneInfo is not None else timezone.utc
+            for h in data.get('data', [])[:24]:
+                dt = datetime.fromisoformat(h['time'].replace('Z', '+00:00'))
+                dt = dt.astimezone(adelaide_tz)
+                hours.append(dt)
+                temps.append(h['temp'])
+            if hours:
+                fig2, ax2 = plt.subplots(figsize=(8, 5.12), dpi=100)
+                ax2.plot(hours, temps, marker='o', linestyle='-', color='#ff7f0e')
+                ax2.set_xlabel("Time (Next 24h)")
+                ax2.set_ylabel("Temp (°C)")
+                ax2.set_title("Current Day Expected Temperature")
+                ax2.xaxis.set_major_formatter(mdates.DateFormatter('%I %p'))
+                ax2.xaxis.set_major_locator(mdates.HourLocator(interval=3))
+                fig2.autofmt_xdate(rotation=45, ha='right')
+                fig2.tight_layout()
+                buf2 = io.BytesIO()
+                fig2.savefig(buf2, format="png")
+                plt.close(fig2)
+                buf2.seek(0)
+                img_hourly = Image.open(buf2).convert("RGB").resize((800, 512))
+    except Exception as e:
+        print(f"⚠️  Failed to generate hourly plot: {e}")
 
-    ax.set_xlabel("Date")
-    ax.set_ylabel("Temp (°C)")
-    ax.set_title("7‑Day Temperature Forecast")
-    ax.legend(loc="upper right")
-    
-    # Format the x-axis dates nicely
-    ax.xaxis.set_major_formatter(mdates.DateFormatter('%A\n%d %b'))
-    ax.xaxis.set_major_locator(mdates.DayLocator())
-    fig.autofmt_xdate(rotation=0, ha='center')
+    # 3. HELPER TO FETCH RADAR (Top Right / Bottom Right)
+    def fetch_radar(radar_id):
+        headers = {"User-Agent": "Mozilla/5.0"}
+        def fetch_pil(u):
+            r = session.get(u, headers=headers, timeout=10)
+            r.raise_for_status()
+            return Image.open(io.BytesIO(r.content)).convert("RGBA")
+        try:
+            bg = fetch_pil("https://www.bom.gov.au/products/radar_transparencies/IDR463.background.png")
+            topo = fetch_pil("https://www.bom.gov.au/products/radar_transparencies/IDR463.topography.png")
+            loc = fetch_pil("https://www.bom.gov.au/products/radar_transparencies/IDR463.locations.png")
+            
+            loop_url = f"https://reg.bom.gov.au/products/{radar_id}.loop.shtml"
+            html = session.get(loop_url, headers=headers, timeout=10).text
+            matches = re.findall(r'theImageNames\[\d+\]\s*=\s*"([^"]+)";', html)
+            
+            if matches:
+                sweep = fetch_pil("https://reg.bom.gov.au" + matches[-1])
+            else:
+                sweep = Image.new("RGBA", (512, 512), (0,0,0,0))
+                
+            canvas = Image.alpha_composite(bg, topo)
+            canvas = Image.alpha_composite(canvas, sweep)
+            canvas = Image.alpha_composite(canvas, loc)
+            return canvas.convert("RGB").resize((512, 512))
+        except Exception as err:
+            print(f"⚠️  Failed to fetch radar {radar_id}: {err}")
+            return Image.new("RGB", (512, 512), "white")
 
-    buf = io.BytesIO()
-    fig.savefig(buf, format="png", bbox_inches='tight')
-    plt.close(fig)
-    buf.seek(0)
-    return buf.read()
+    radar_now = fetch_radar("IDR463")
+    radar_24h = fetch_radar("IDR46D")
+
+    # 4. COMPOSITE 2x2 QUAD
+    quad = Image.new("RGB", (1312, 1024), "white")
+    quad.paste(img_hourly, (0, 0))       # Top Left
+    quad.paste(img_7day, (0, 512))       # Bottom Left
+    quad.paste(radar_now, (800, 0))      # Top Right
+    quad.paste(radar_24h, (800, 512))    # Bottom Right
+    
+    out = io.BytesIO()
+    quad.save(out, format="PNG")
+    out.seek(0)
+    return out.read()
 
 
 def post_to_discord(webhook_url: str, image_bytes: bytes, timestamp: datetime):
@@ -247,9 +308,9 @@ def post_to_discord(webhook_url: str, image_bytes: bytes, timestamp: datetime):
             if parts:
                 forecast_str = "\n🔮 Forecast: " + " | ".join(parts)
                 
-            # generate full-image of 7-day forecast
+            # generate full-image of 2x2 forecast quad
             try:
-                forecast_image = make_forecast_image(fc)
+                forecast_image = make_quad_forecast_image(fc)
             except Exception as ie:
                 print(f"⚠️  Forecast image generation failed: {ie}")
     except Exception as e:
