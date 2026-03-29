@@ -214,21 +214,28 @@ def make_quad_forecast_image(forecast: dict) -> bytes:
             hours = []
             temps = []
             adelaide_tz = ZoneInfo("Australia/Adelaide") if ZoneInfo is not None else timezone.utc
-            for h in data.get('data', [])[:24]:
+            current_time = datetime.now(timezone.utc).astimezone(adelaide_tz).replace(tzinfo=None)
+            current_date = current_time.date()
+            start_of_day = datetime(current_date.year, current_date.month, current_date.day)
+            
+            # Fetch data for the current day only (up to midnight roughly)
+            for h in data.get('data', []):
                 dt = datetime.fromisoformat(h['time'].replace('Z', '+00:00'))
                 dt = dt.astimezone(adelaide_tz).replace(tzinfo=None)
-                hours.append(dt)
-                temps.append(h['temp'])
+                if dt.date() == current_date or (dt.date() == current_date + timedelta(days=1) and dt.hour == 0):
+                    hours.append(dt)
+                    temps.append(h['temp'])
             if hours:
                 fig2, ax2 = plt.subplots(figsize=(8, 5.12), dpi=100)
                 ax2.plot(hours, temps, marker='o', linestyle='-', color='#ff7f0e')
                 
                 # Add vertical line for current time
-                current_time = datetime.now(timezone.utc).astimezone(adelaide_tz).replace(tzinfo=None)
                 ax2.axvline(x=current_time, color='magenta', linestyle='--', linewidth=2, label='Current Time')
                 ax2.legend(loc="upper right")
                 
-                ax2.set_xlabel("Time (Next 24h)")
+                # Set hard limits for 12am to 12am next day
+                ax2.set_xlim(start_of_day, start_of_day + timedelta(days=1))
+                ax2.set_xlabel("Time (Current Day)")
                 ax2.set_ylabel("Temp (°C)")
                 ax2.set_title("Current Day Expected Temperature")
                 ax2.xaxis.set_major_formatter(mdates.DateFormatter('%I %p'))
