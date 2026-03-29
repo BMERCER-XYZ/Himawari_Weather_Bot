@@ -175,6 +175,8 @@ def make_quad_forecast_image(forecast: dict) -> bytes:
     for entry in entries:
         try:
             dt = datetime.fromisoformat(entry["dt_txt"])
+            if dt.tzinfo is not None:
+                dt = dt.replace(tzinfo=None)
         except Exception:
             continue
         if entry["max"] is not None:
@@ -214,7 +216,7 @@ def make_quad_forecast_image(forecast: dict) -> bytes:
             adelaide_tz = ZoneInfo("Australia/Adelaide") if ZoneInfo is not None else timezone.utc
             for h in data.get('data', [])[:24]:
                 dt = datetime.fromisoformat(h['time'].replace('Z', '+00:00'))
-                dt = dt.astimezone(adelaide_tz)
+                dt = dt.astimezone(adelaide_tz).replace(tzinfo=None)
                 hours.append(dt)
                 temps.append(h['temp'])
             if hours:
@@ -222,7 +224,7 @@ def make_quad_forecast_image(forecast: dict) -> bytes:
                 ax2.plot(hours, temps, marker='o', linestyle='-', color='#ff7f0e')
                 
                 # Add vertical line for current time
-                current_time = datetime.now(timezone.utc).astimezone(adelaide_tz)
+                current_time = datetime.now(timezone.utc).astimezone(adelaide_tz).replace(tzinfo=None)
                 ax2.axvline(x=current_time, color='magenta', linestyle='--', linewidth=2, label='Current Time')
                 ax2.legend(loc="upper right")
                 
