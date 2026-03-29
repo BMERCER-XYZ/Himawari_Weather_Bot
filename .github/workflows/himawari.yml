@@ -26,5 +26,4 @@ jobs:
       - name: Post Himawari image to Discord
         env:
           DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
-          OPENWEATHER_API_KEY: ${{ secrets.OPENWEATHER_API_KEY }}
         run: python post_himawari.py

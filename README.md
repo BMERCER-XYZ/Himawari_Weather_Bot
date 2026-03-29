@@ -2,7 +2,7 @@
 
 This Python script builds a full-disk image from the Himawari-8/9 satellite
 and posts it to a Discord webhook along with current weather information from
-Adelaide Airport (BOM), plus a short forecast pulled from OpenWeatherMap.
+Adelaide Airport (BOM), plus a 7-day forecast pulled from the BOM API.
 
 ## Setup
 
@@ -19,37 +19,20 @@ Adelaide Airport (BOM), plus a short forecast pulled from OpenWeatherMap.
    export DISCORD_WEBHOOK_URL="https://discord.com/api/webhooks/..."
    ```
 
-3. Obtain a (free) API key from https://openweathermap.org/ and store it in a
-   secret named `OPENWEATHER_API_KEY`. Locally you can export the variable:
-
-   ```sh
-   export OPENWEATHER_API_KEY="your_api_key_here"
-   ```
-
-   On GitHub Actions or other CI systems, add `OPENWEATHER_API_KEY` as a
-   repository secret so it isn't exposed in logs.
-
-4. Run the script:
+3. Run the script:
 
    ```sh
    python post_himawari.py
    ```
 
 The bot will find the most recent Himawari tile set, stitch the image,
-  fetch the weather and forecast, generate a small line graph of the
-  5‑day/3‑hour forecast, and post everything to Discord (image + graph).
+  fetch the weather and forecast, generate a shaded line graph of the
+  7-day forecast, and post everything to Discord (image + graph).
 
-  The embed description only includes forecasts for the remainder of the day
-  the message is sent, with times in 12‑hour format.  The attached graph
-  overlays all five days on a single set of axes – each day’s line is drawn on
-  top of the others – and the shared x‑axis is hour‑of‑day only (12 AM, 3 AM,
-  …).  Lines span left-to-right with no padding so the earliest and latest
-  points sit at the image edges.
-- The BOM JSON feed blocks requests without a browser-like user-agent; the
+- The BOM feeds block requests without a browser-like user-agent; the
   script sets one automatically.
-- Forecasts are fetched using the free OpenWeatherMap Current Weather and
-  Forecasts API (`/forecast` endpoint) which returns 3‑hourly data for the
-  next five days. If the forecast request fails the bot will still post the
-  satellite image and current observation.
+- Forecasts are fetched directly from the local BOM XML feeds. If the 
+  forecast request fails the bot will still post the satellite image and
+  current observation.
 
 Happy meteorology! 🌤️

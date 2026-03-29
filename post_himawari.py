@@ -14,6 +14,8 @@ except Exception:
         ZoneInfo = None
 from PIL import Image
 
+import xml.etree.ElementTree as ET
+
 session = requests.Session()
 retries = Retry(total=5, backoff_factor=1, status_forcelist=[500, 502, 503, 504])
 session.mount('http://', HTTPAdapter(max_retries=retries))
@@ -32,13 +34,7 @@ DISCORD_MAX_BYTES = 7 * 1024 * 1024  # 7MB to be safe
 # Weather endpoint for the nearest station (Australian BOM JSON)
 WEATHER_URL = "https://www.bom.gov.au/fwo/IDS60801/IDS60801.94146.json"
 
-# OpenWeatherMap endpoints
-# - free "Current weather and forecasts" API for 3‑hourly 5‑day forecasts
-OPENWEATHER_FORECAST_URL = "https://api.openweathermap.org/data/2.5/forecast"
-
-# environment variable name used for storing the OWM API key; in a repo
-# this should be set as a secret named this value (e.g. in GitHub Actions).
-OPENWEATHER_KEY_ENV = "OPENWEATHER_API_KEY"
+BOM_FORECAST_URL = "https://www.bom.gov.au/fwo/IDS10044.xml"
 
 
 def fetch_weather(url: str) -> dict:
@@ -128,91 +124,93 @@ def build_full_disk(timestamp: datetime) -> bytes:
     raise RuntimeError("Could not compress image small enough for Discord.")
 
 
-def fetch_forecast(api_key: str, lat: float, lon: float) -> dict:
-    """Call the free forecast endpoint and return every 3‑hourly entry.
-
-    The forecast API returns a list of 3‑hourly blocks for the next five days.
-    We return the complete list and let the caller decide how much to display
-    in text; the graph generator will use the full list.
-    """
-    params = {
-        "lat": lat,
-        "lon": lon,
-        "appid": api_key,
-        "units": "metric",
-    }
-    r = session.get(OPENWEATHER_FORECAST_URL, params=params, timeout=10)
+def fetch_forecast() -> dict:
+    """Fetch the BOM daily forecast XML and return min/max temperatures and descriptions."""
+    headers = {"User-Agent": "Mozilla/5.0"}
+    r = session.get(BOM_FORECAST_URL, timeout=10, headers=headers)
     r.raise_for_status()
-    data = r.json()
-    lst = data.get("list", [])
-    if not lst:
-        raise RuntimeError("no forecast data returned from OpenWeatherMap")
+
+    tree = ET.parse(io.StringIO(r.text))
+    root = tree.getroot()
+
+    adelaide = root.find(".//area[@description='Adelaide']")
+    if adelaide is None:
+        raise RuntimeError("Adelaide area not found in BOM forecast XML")
 
     entries = []
-    for item in lst:
-        dt_txt = item.get("dt_txt", "")
-        main = item.get("main", {})
-        temp = main.get("temp")
-        desc = ""
-        if item.get("weather"):
-            desc = item["weather"][0].get("description", "")
-        entries.append((dt_txt, temp, desc))
+    for period in adelaide.findall("forecast-period"):
+        start_time = period.get("start-time-local")
+        # Format usually "2026-03-29T15:00:00+10:30"
+        
+        min_temp_elem = period.find("element[@type='air_temperature_minimum']")
+        max_temp_elem = period.find("element[@type='air_temperature_maximum']")
+        precis_elem = period.find("text[@type='precis']")
+        
+        min_t = int(min_temp_elem.text) if min_temp_elem is not None and min_temp_elem.text else None
+        max_t = int(max_temp_elem.text) if max_temp_elem is not None and max_temp_elem.text else None
+        desc = precis_elem.text if precis_elem is not None else ""
+        
+        entries.append({
+            "dt_txt": start_time,
+            "min": min_t,
+            "max": max_t,
+            "desc": desc
+        })
 
     return {"entries": entries}
 
 
 def make_forecast_image(forecast: dict) -> bytes:
-    """Return PNG bytes of a temperature plot for the supplied forecast.
-
-    Each day is plotted as a separate line on a *shared* x-axis.  The x-axis
-    shows only the time of day (e.g. 12 AM, 3 AM, …) and all lines overlap
-    vertically so that the viewer can compare temperatures at the same hour on
-    different days.  This matches the user request for graphs "stacked on top of
-    each other" and a common hour-only axis.
+    """Return PNG bytes of a temperature plot for the supplied BOM forecast.
+    
+    Plots a 7-day Min and Max temperature line graph.
     """
     import matplotlib.pyplot as plt
     import matplotlib.ticker as ticker
+    import matplotlib.dates as mdates
 
     entries = forecast.get("entries", [])
     if not entries:
         return b""
 
-    # parse timestamps and group by date
-    data_by_date = {}
-    for dt_txt, temp, _ in entries:
+    dts = []
+    mins = []
+    maxs = []
+    
+    for entry in entries:
         try:
-            dt = datetime.strptime(dt_txt, "%Y-%m-%d %H:%M:%S")
+            dt = datetime.fromisoformat(entry["dt_txt"])
         except Exception:
             continue
-        # dt_txt from OpenWeatherMap is in UTC; convert to Australia/Adelaide
-        if ZoneInfo is not None:
-            try:
-                dt = dt.replace(tzinfo=timezone.utc).astimezone(ZoneInfo("Australia/Adelaide"))
-            except Exception:
-                pass
-        data_by_date.setdefault(dt.date(), []).append((dt, temp))
+            
+        # BOM might omit min Temp for the current 'rest-of' day
+        # we'll plot only those that have max temp
+        if entry["max"] is not None:
+            dts.append(dt)
+            mins.append(entry["min"] if entry["min"] is not None else entry["max"] - 5) # Fallback if min is missing
+            maxs.append(entry["max"])
 
-    if not data_by_date:
+    if not dts:
         return b""
 
     fig, ax = plt.subplots(figsize=(10, 6))
-    # x axis is hour of day (0–24)
-    for date, pts in sorted(data_by_date.items()):
-        xs = [(dt.hour + dt.minute/60) for dt, _ in pts]
-        ys = [temp for _, temp in pts]
-        ax.plot(xs, ys, label=date.isoformat())
+    
+    # Plot Min and Max temperature lines
+    ax.plot(dts, maxs, marker='o', linestyle='-', color='#d62728', label='Max Temp (°C)')
+    ax.plot(dts, mins, marker='o', linestyle='-', color='#1f77b4', label='Min Temp (°C)')
+    
+    # Shade the region between min and max
+    ax.fill_between(dts, mins, maxs, color='gray', alpha=0.1)
 
-    ax.set_xlim(0, 24)
-    ax.set_xlabel("Hour of day")
+    ax.set_xlabel("Date")
     ax.set_ylabel("Temp (°C)")
-    ax.set_title("5‑day 3‑hour forecast (hours of day)")
+    ax.set_title("7‑Day Temperature Forecast")
     ax.legend(loc="upper right")
-
-    # ticks every 3 hours, formatted to 12‑hour with am/pm
-    ax.xaxis.set_major_locator(ticker.MultipleLocator(3))
-    ax.xaxis.set_major_formatter(ticker.FuncFormatter(
-        lambda x, pos: f"{int(x)%12 or 12}{'AM' if x<12 or x>=24 else 'PM'}"
-    ))
+    
+    # Format the x-axis dates nicely
+    ax.xaxis.set_major_formatter(mdates.DateFormatter('%A\n%d %b'))
+    ax.xaxis.set_major_locator(mdates.DayLocator())
+    fig.autofmt_xdate(rotation=0, ha='center')
 
     buf = io.BytesIO()
     fig.savefig(buf, format="png", bbox_inches='tight')
@@ -221,7 +219,7 @@ def make_forecast_image(forecast: dict) -> bytes:
     return buf.read()
 
 
-def post_to_discord(webhook_url: str, image_bytes: bytes, timestamp: datetime, owm_key: str):
+def post_to_discord(webhook_url: str, image_bytes: bytes, timestamp: datetime):
     import json
     time_str = timestamp.strftime("%Y-%m-%d %H:%M UTC")
     size_mb = len(image_bytes) / 1024 / 1024
@@ -229,45 +227,31 @@ def post_to_discord(webhook_url: str, image_bytes: bytes, timestamp: datetime, o
     # grab weather information; if it fails we'll let the exception bubble up
     weather = fetch_weather(WEATHER_URL)
 
-    # also try to obtain a short forecast from OpenWeatherMap; it's okay if the
+    # try to obtain a forecast from BOM; it's okay if the
     # request fails, we can just omit that part of the message
     forecast_str = ""
     forecast_image = None
     try:
-        if owm_key:
-            fc = fetch_forecast(owm_key, weather.get("lat"), weather.get("lon"))
-            if fc and fc.get("entries"):
-                # only keep entries for the remainder of the current day in
-                # Australia/Adelaide local time (OpenWeatherMap times are UTC)
-                parts = []
-                adelaide_tz = ZoneInfo("Australia/Adelaide") if ZoneInfo is not None else None
-                if adelaide_tz is not None:
-                    today = timestamp.astimezone(adelaide_tz).date()
+        fc = fetch_forecast()
+        if fc and fc.get("entries"):
+            # Show today and tomorrow in the discord text description
+            parts = []
+            for i, entry in enumerate(fc["entries"][:2]):
+                desc = entry["desc"]
+                max_t = f"{entry['max']}°C" if entry["max"] is not None else "?°C"
+                if i == 0:
+                    parts.append(f"Tonight/Rest of Today: {desc} Max {max_t}")
                 else:
-                    today = timestamp.date()
-
-                for dt_txt, temp, desc in fc["entries"]:
-                    try:
-                        dt = datetime.strptime(dt_txt, "%Y-%m-%d %H:%M:%S")
-                    except Exception:
-                        continue
-                    if adelaide_tz is not None:
-                        try:
-                            dt = dt.replace(tzinfo=timezone.utc).astimezone(adelaide_tz)
-                        except Exception:
-                            pass
-                    if dt.date() != today:
-                        continue
-                    # convert to 12‑hour time (now in Adelaide tz if available)
-                    when = dt.strftime("%I:%M %p").lstrip("0")
-                    parts.append(f"{when}: {desc} {temp}°C")
-                if parts:
-                    forecast_str = "\n🔮 Today: " + "; ".join(parts)
-                # generate full-image of entire 5-day forecast
-                try:
-                    forecast_image = make_forecast_image(fc)
-                except Exception as ie:
-                    print(f"⚠️  Forecast image generation failed: {ie}")
+                    parts.append(f"Tomorrow: {desc} Max {max_t}")
+                    
+            if parts:
+                forecast_str = "\n🔮 Forecast: " + " | ".join(parts)
+                
+            # generate full-image of 7-day forecast
+            try:
+                forecast_image = make_forecast_image(fc)
+            except Exception as ie:
+                print(f"⚠️  Forecast image generation failed: {ie}")
     except Exception as e:
         # don't crash the whole bot for a forecast hiccup; print for diagnostics
         print(f"⚠️  Forecast lookup failed: {e}")
@@ -319,19 +303,9 @@ def main():
         print("❌ Error: DISCORD_WEBHOOK_URL environment variable not set.")
         sys.exit(1)
 
-    owm_key = os.environ.get(OPENWEATHER_KEY_ENV)
-    if not owm_key:
-        # don't treat this as a fatal error; the bot will still post the image
-        # and current observation but omit the OpenWeatherMap forecast.  When
-        # running in GitHub Actions you must map the repo secret yourself,
-        # e.g. ``env: OPENWEATHER_API_KEY: ${{ secrets.OPENWEATHER_API_KEY }}``.
-        print(f"⚠️  Warning: {OPENWEATHER_KEY_ENV} environment variable not set; "
-              "forecast will be skipped.")
-        owm_key = ""
-
     timestamp = find_valid_timestamp()
     image_bytes = build_full_disk(timestamp)
-    post_to_discord(webhook_url, image_bytes, timestamp, owm_key)
+    post_to_discord(webhook_url, image_bytes, timestamp)
 
 
 if __name__ == "__main__":
