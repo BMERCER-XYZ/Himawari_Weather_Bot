@@ -220,6 +220,12 @@ def make_quad_forecast_image(forecast: dict) -> bytes:
             if hours:
                 fig2, ax2 = plt.subplots(figsize=(8, 5.12), dpi=100)
                 ax2.plot(hours, temps, marker='o', linestyle='-', color='#ff7f0e')
+                
+                # Add vertical line for current time
+                current_time = datetime.now(timezone.utc).astimezone(adelaide_tz)
+                ax2.axvline(x=current_time, color='magenta', linestyle='--', linewidth=2, label='Current Time')
+                ax2.legend(loc="upper right")
+                
                 ax2.set_xlabel("Time (Next 24h)")
                 ax2.set_ylabel("Temp (°C)")
                 ax2.set_title("Current Day Expected Temperature")
