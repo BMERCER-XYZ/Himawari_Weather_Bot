@@ -390,13 +390,46 @@ def post_to_discord(webhook_url: str, image_bytes: bytes, timestamp: datetime):
     if forecast_image:
         files["forecast"] = ("forecast.png", forecast_image, "image/png")
 
+    # 1. Attempt to delete the previous message
+    try:
+        with open("last_message_id.txt", "r") as f:
+            old_msg_id = f.read().strip()
+        if old_msg_id:
+            # We need to strip query params from the base url if any exist before appending /messages/{id}
+            base_url = webhook_url.split("?")[0]
+            delete_url = f"{base_url}/messages/{old_msg_id}"
+            del_resp = session.delete(delete_url, timeout=10)
+            if del_resp.status_code == 204:
+                print(f"🗑️  Deleted previous message: {old_msg_id}")
+            else:
+                print(f"⚠️  Failed to delete previous message: {del_resp.status_code}")
+    except FileNotFoundError:
+        pass  # No previous message to delete
+    except Exception as e:
+        print(f"⚠️  Error deleting previous message: {e}")
+
+    # 2. Post the new message (Note the wait=true param to get the message object back)
+    post_url = f"{webhook_url}&wait=true" if "?" in webhook_url else f"{webhook_url}?wait=true"
+
     response = session.post(
-        webhook_url,
+        post_url,
         data={"payload_json": json.dumps(payload)},
         files=files,
         timeout=60
     )
     response.raise_for_status()
+
+    # 3. Save the new message ID for next time
+    try:
+        new_message_data = response.json()
+        new_msg_id = new_message_data.get('id')
+        if new_msg_id:
+            with open("last_message_id.txt", "w") as f:
+                f.write(new_msg_id)
+            print(f"✅ Saved new message ID: {new_msg_id}")
+    except Exception as e:
+        print(f"⚠️  Failed to parse new message ID: {e}")
+
     print(f"✅ Posted successfully! ({size_mb:.1f}MB)")
 
 
