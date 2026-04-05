@@ -33,7 +33,7 @@ DISCORD_MAX_BYTES = 7 * 1024 * 1024  # 7MB to be safe
 WEATHER_URL = "https://www.bom.gov.au/fwo/IDS60801/IDS60801.94146.json"
 
 BOM_FORECAST_URL = "https://www.bom.gov.au/fwo/IDS10044.xml"
-HOURLY_FORECAST_LOCATION_ID = "r1f90q5"
+HOURLY_FORECAST_LOCATION_ID = "r1f90q"
 SIDE_PANEL_WIDTH = 200
 
 
