@@ -9,11 +9,8 @@ from datetime import datetime, timezone, timedelta
 try:
     from zoneinfo import ZoneInfo
 except Exception:
-    try:
-        from backports.zoneinfo import ZoneInfo
-    except Exception:
-        ZoneInfo = None
-from PIL import Image
+    ZoneInfo = None
+from PIL import Image, ImageDraw, ImageFont
 
 import xml.etree.ElementTree as ET
 
@@ -36,6 +33,207 @@ DISCORD_MAX_BYTES = 7 * 1024 * 1024  # 7MB to be safe
 WEATHER_URL = "https://www.bom.gov.au/fwo/IDS60801/IDS60801.94146.json"
 
 BOM_FORECAST_URL = "https://www.bom.gov.au/fwo/IDS10044.xml"
+HOURLY_FORECAST_LOCATION_ID = "r1f90q5"
+SIDE_PANEL_WIDTH = 200
+
+
+def parse_utc_timestamp(value: str | None) -> datetime | None:
+    if not value:
+        return None
+    try:
+        if value.endswith("Z"):
+            return datetime.fromisoformat(value.replace("Z", "+00:00"))
+        if len(value) == 14 and value.isdigit():
+            return datetime.strptime(value, "%Y%m%d%H%M%S").replace(tzinfo=timezone.utc)
+        parsed = datetime.fromisoformat(value)
+        if parsed.tzinfo is None:
+            return parsed.replace(tzinfo=timezone.utc)
+        return parsed.astimezone(timezone.utc)
+    except Exception:
+        return None
+
+
+def safe_float(value) -> float | None:
+    try:
+        if value is None:
+            return None
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def load_font(size: int, bold: bool = False):
+    try:
+        from matplotlib import font_manager
+
+        weight = "bold" if bold else "normal"
+        font_path = font_manager.findfont(font_manager.FontProperties(family="DejaVu Sans", weight=weight))
+        return ImageFont.truetype(font_path, size=size)
+    except Exception:
+        return ImageFont.load_default()
+
+
+def draw_centered_text(draw: ImageDraw.ImageDraw, center_x: float, y: float, text: str, font, fill):
+    bbox = draw.textbbox((0, 0), text, font=font)
+    width = bbox[2] - bbox[0]
+    draw.text((center_x - width / 2, y), text, font=font, fill=fill)
+
+
+def estimate_rain_last_24h(observations: list[dict]) -> float | None:
+    if not observations:
+        return None
+
+    latest_time = parse_utc_timestamp(observations[0].get("aifstime_utc"))
+    if latest_time is None:
+        return None
+
+    cutoff = latest_time - timedelta(hours=24)
+    series = []
+    for obs in observations:
+        obs_time = parse_utc_timestamp(obs.get("aifstime_utc"))
+        if obs_time is None or obs_time < cutoff:
+            continue
+        rain_value = safe_float(obs.get("rain_trace"))
+        if rain_value is not None:
+            series.append((obs_time, rain_value))
+
+    if not series:
+        return None
+
+    series.sort(key=lambda item: item[0])
+    total = 0.0
+    previous = series[0][1]
+    for _, rain_value in series[1:]:
+        delta = rain_value - previous
+        if delta > 0:
+            total += delta
+        previous = rain_value
+
+    return round(total, 1)
+
+
+def render_sidebar_panel(title: str, accent_color: tuple[int, int, int], background_color: tuple[int, int, int], items: list[dict]) -> Image.Image:
+    panel = Image.new("RGB", (SIDE_PANEL_WIDTH, ZOOM * TILE_SIZE), background_color)
+    draw = ImageDraw.Draw(panel)
+
+    panel_width, panel_height = panel.size
+    draw.rectangle((0, 0, 7, panel_height), fill=accent_color)
+    draw.rectangle((panel_width - 7, 0, panel_width, panel_height), fill=accent_color)
+    draw.rounded_rectangle((10, 10, panel_width - 10, panel_height - 10), radius=24, outline=accent_color, width=3)
+
+    title_font = load_font(32, bold=True)
+    label_font = load_font(18, bold=True)
+    value_font = load_font(36, bold=True)
+    detail_font = load_font(16)
+
+    text_color = (245, 247, 250)
+    dim_color = (205, 214, 225)
+
+    draw_centered_text(draw, panel_width / 2, 62, title, title_font, accent_color)
+
+    top = 420
+    bottom = panel_height - 180
+    usable_height = max(1, bottom - top)
+    step = usable_height / max(len(items), 1)
+
+    for index, item in enumerate(items):
+        y = top + index * step
+        if index > 0:
+            divider_y = y - 60
+            draw.line((28, divider_y, panel_width - 28, divider_y), fill=(70, 90, 115), width=2)
+        draw_centered_text(draw, panel_width / 2, y, item["label"], label_font, dim_color)
+        draw_centered_text(draw, panel_width / 2, y + 34, item["value"], value_font, text_color)
+        if item.get("detail"):
+            draw_centered_text(draw, panel_width / 2, y + 90, item["detail"], detail_font, dim_color)
+
+    footer = items[-1].get("footer") if items else None
+    if footer:
+        footer_font = load_font(14)
+        draw_centered_text(draw, panel_width / 2, panel_height - 70, footer, footer_font, dim_color)
+
+    return panel
+
+
+def fetch_hourly_forecast_summary(location_id: str = HOURLY_FORECAST_LOCATION_ID) -> dict:
+    headers = {"User-Agent": "Mozilla/5.0"}
+    url = f"https://api.weather.bom.gov.au/v1/locations/{location_id}/forecasts/hourly"
+    r = session.get(url, headers=headers, timeout=10)
+    r.raise_for_status()
+    data = r.json()
+
+    adelaide_tz = ZoneInfo("Australia/Adelaide") if ZoneInfo is not None else timezone.utc
+    current_time = datetime.now(timezone.utc).astimezone(adelaide_tz).replace(tzinfo=None)
+    current_date = current_time.date()
+
+    cache_file = "hourly_forecast_cache.json"
+    try:
+        with open(cache_file, "r") as f:
+            forecast_cache = json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError):
+        forecast_cache = {}
+
+    for entry in data.get("data", []):
+        time_value = entry.get("time")
+        temp_value = entry.get("temp")
+        if time_value and temp_value is not None:
+            forecast_cache[time_value] = temp_value
+
+    keys_to_delete = []
+    for time_str in forecast_cache.keys():
+        dt = parse_utc_timestamp(time_str)
+        if dt is None:
+            continue
+        local_dt = dt.astimezone(adelaide_tz).replace(tzinfo=None)
+        if local_dt.date() < current_date - timedelta(days=1):
+            keys_to_delete.append(time_str)
+    for key in keys_to_delete:
+        del forecast_cache[key]
+
+    with open(cache_file, "w") as f:
+        json.dump(forecast_cache, f, indent=2)
+
+    hours = []
+    temps = []
+    for time_str, temp in sorted(forecast_cache.items()):
+        dt = parse_utc_timestamp(time_str)
+        if dt is None:
+            continue
+        local_dt = dt.astimezone(adelaide_tz).replace(tzinfo=None)
+        if local_dt.date() == current_date or (local_dt.date() == current_date + timedelta(days=1) and local_dt.hour == 0):
+            hours.append(local_dt)
+            temps.append(temp)
+
+    wind_speeds = []
+    rain_next_24h = 0.0
+    for entry in data.get("data", []):
+        dt = parse_utc_timestamp(entry.get("time"))
+        if dt is None:
+            continue
+        local_dt = dt.astimezone(adelaide_tz).replace(tzinfo=None)
+
+        wind = entry.get("wind", {})
+        wind_speed = wind.get("speed_kilometre")
+        if local_dt.date() == current_date or (local_dt.date() == current_date + timedelta(days=1) and local_dt.hour == 0):
+            if isinstance(wind_speed, (int, float)):
+                wind_speeds.append(wind_speed)
+
+        if current_time <= local_dt < current_time + timedelta(days=1):
+            rain = entry.get("rain", {})
+            rain_value = rain.get("precipitation_amount_50_percent_chance")
+            if rain_value is None:
+                amount = rain.get("amount", {})
+                rain_value = amount.get("max")
+                if rain_value is None:
+                    rain_value = amount.get("min")
+            rain_next_24h += safe_float(rain_value) or 0.0
+
+    return {
+        "hours": hours,
+        "temps": temps,
+        "wind_min": min(wind_speeds) if wind_speeds else None,
+        "wind_max": max(wind_speeds) if wind_speeds else None,
+        "rain_next_24h": round(rain_next_24h, 1),
+    }
 
 
 def fetch_weather(url: str) -> dict:
@@ -64,8 +262,11 @@ def fetch_weather(url: str) -> dict:
         "press": obs.get("press"),
         "weather": obs.get("weather"),
         "cloud": obs.get("cloud"),
+        "rain_trace": obs.get("rain_trace"),
         "lat": obs.get("lat"),
         "lon": obs.get("lon"),
+        "observation_time": obs.get("aifstime_utc"),
+        "history": obs_list,
     }
 
 
@@ -97,7 +298,7 @@ def fetch_tile(url: str) -> Image.Image:
 
 def build_full_disk(timestamp: datetime) -> bytes:
     full_size = ZOOM * TILE_SIZE  # e.g. 4400px for ZOOM=8
-    canvas = Image.new("RGB", (full_size, full_size))
+    canvas = Image.new("RGB", (full_size + SIDE_PANEL_WIDTH * 2, full_size), "white")
 
     total = ZOOM * ZOOM
     print(f"Fetching {total} tiles ({ZOOM}x{ZOOM} grid = {full_size}x{full_size}px)...")
@@ -106,11 +307,64 @@ def build_full_disk(timestamp: datetime) -> bytes:
         for col in range(ZOOM):
             url = get_timestamp_url(timestamp, col, row)
             tile = fetch_tile(url)
-            canvas.paste(tile, (col * TILE_SIZE, row * TILE_SIZE))
+            canvas.paste(tile, (SIDE_PANEL_WIDTH + col * TILE_SIZE, row * TILE_SIZE))
             done = row * ZOOM + col + 1
             print(f"  Tile {done}/{total} ({col},{row})", end="\r")
 
     print()  # newline after progress
+
+    try:
+        weather = fetch_weather(WEATHER_URL)
+        hourly_summary = fetch_hourly_forecast_summary()
+
+        rain_last_24h = estimate_rain_last_24h(weather.get("history", []))
+        current_wind = safe_float(weather.get("wind_spd_kmh"))
+        current_wind_dir = weather.get("wind_dir") or "-"
+
+        left_panel = render_sidebar_panel(
+            "WIND",
+            (76, 142, 255),
+            (12, 25, 45),
+            [
+                {
+                    "label": "Current",
+                    "value": f"{int(current_wind)} km/h" if current_wind is not None else "N/A",
+                    "detail": current_wind_dir,
+                },
+                {
+                    "label": "Low today",
+                    "value": f"{hourly_summary['wind_min']:.0f} km/h" if hourly_summary.get("wind_min") is not None else "N/A",
+                    "detail": "Expected minimum",
+                },
+                {
+                    "label": "High today",
+                    "value": f"{hourly_summary['wind_max']:.0f} km/h" if hourly_summary.get("wind_max") is not None else "N/A",
+                    "detail": "Expected maximum",
+                },
+            ],
+        )
+        right_panel = render_sidebar_panel(
+            "RAIN",
+            (255, 162, 61),
+            (43, 23, 10),
+            [
+                {
+                    "label": "Last 24h",
+                    "value": f"{rain_last_24h:.1f} mm" if rain_last_24h is not None else "N/A",
+                    "detail": "From station history",
+                },
+                {
+                    "label": "Next 24h",
+                    "value": f"{hourly_summary['rain_next_24h']:.1f} mm" if hourly_summary.get("rain_next_24h") is not None else "N/A",
+                    "detail": "Forecast amount",
+                },
+            ],
+        )
+
+        canvas.paste(left_panel, (0, 0))
+        canvas.paste(right_panel, (SIDE_PANEL_WIDTH + full_size, 0))
+    except Exception as e:
+        print(f"⚠️  Failed to render side panels: {e}")
 
     # Compress to fit Discord's 8MB limit, reducing quality if needed
     for quality in [95, 85, 75, 60]:
@@ -209,71 +463,36 @@ def make_quad_forecast_image(forecast: dict) -> bytes:
     # 2. GENERATE HOURLY PLOT (Top Left)
     img_hourly = Image.new("RGB", (800, 512), "white")
     try:
-        r = session.get('https://api.weather.bom.gov.au/v1/locations/r3gx2f/forecasts/hourly', headers={"User-Agent": "Mozilla/5.0"})
-        if r.status_code == 200:
-            data = r.json()
-            hours = []
-            temps = []
-            adelaide_tz = ZoneInfo("Australia/Adelaide") if ZoneInfo is not None else timezone.utc
-            current_time = datetime.now(timezone.utc).astimezone(adelaide_tz).replace(tzinfo=None)
-            current_date = current_time.date()
-            start_of_day = datetime(current_date.year, current_date.month, current_date.day)
+        hourly_summary = fetch_hourly_forecast_summary()
+        hours = hourly_summary.get("hours", [])
+        temps = hourly_summary.get("temps", [])
+        adelaide_tz = ZoneInfo("Australia/Adelaide") if ZoneInfo is not None else timezone.utc
+        current_time = datetime.now(timezone.utc).astimezone(adelaide_tz).replace(tzinfo=None)
+        current_date = current_time.date()
+        start_of_day = datetime(current_date.year, current_date.month, current_date.day)
 
-            # Load past forecast data if it exists
-            cache_file = "hourly_forecast_cache.json"
-            try:
-                with open(cache_file, "r") as f:
-                    forecast_cache = json.load(f)
-            except (FileNotFoundError, json.JSONDecodeError):
-                forecast_cache = {}
+        if hours:
+            fig2, ax2 = plt.subplots(figsize=(8, 5.12), dpi=100)
+            ax2.plot(hours, temps, marker='o', linestyle='-', color='#ff7f0e')
 
-            # Add new data to cache
-            for h in data.get('data', []):
-                forecast_cache[h['time']] = h['temp']
+            # Add vertical line for current time
+            ax2.axvline(x=current_time, color='magenta', linestyle='--', linewidth=2, label='Current Time')
+            ax2.legend(loc="upper right")
 
-            # Optional: Clean up cache entries older than yesterday
-            keys_to_delete = []
-            for time_str in forecast_cache.keys():
-                dt = datetime.fromisoformat(time_str.replace('Z', '+00:00'))
-                dt = dt.astimezone(adelaide_tz).replace(tzinfo=None)
-                if dt.date() < current_date - timedelta(days=1):
-                    keys_to_delete.append(time_str)
-            for k in keys_to_delete:
-                del forecast_cache[k]
-
-            # Save the updated cache
-            with open(cache_file, "w") as f:
-                json.dump(forecast_cache, f, indent=2)
-
-            # Fetch data for the current day only (up to midnight roughly)
-            for time_str, temp in sorted(forecast_cache.items()):
-                dt = datetime.fromisoformat(time_str.replace('Z', '+00:00'))
-                dt = dt.astimezone(adelaide_tz).replace(tzinfo=None)
-                if dt.date() == current_date or (dt.date() == current_date + timedelta(days=1) and dt.hour == 0):
-                    hours.append(dt)
-                    temps.append(temp)
-            if hours:
-                fig2, ax2 = plt.subplots(figsize=(8, 5.12), dpi=100)
-                ax2.plot(hours, temps, marker='o', linestyle='-', color='#ff7f0e')
-                
-                # Add vertical line for current time
-                ax2.axvline(x=current_time, color='magenta', linestyle='--', linewidth=2, label='Current Time')
-                ax2.legend(loc="upper right")
-                
-                # Set hard limits for 12am to 12am next day
-                ax2.set_xlim(start_of_day, start_of_day + timedelta(days=1))
-                ax2.set_xlabel("Time (Current Day)")
-                ax2.set_ylabel("Temp (°C)")
-                ax2.set_title("Current Day Expected Temperature")
-                ax2.xaxis.set_major_formatter(mdates.DateFormatter('%I %p'))
-                ax2.xaxis.set_major_locator(mdates.HourLocator(interval=3))
-                fig2.autofmt_xdate(rotation=45, ha='right')
-                fig2.tight_layout()
-                buf2 = io.BytesIO()
-                fig2.savefig(buf2, format="png")
-                plt.close(fig2)
-                buf2.seek(0)
-                img_hourly = Image.open(buf2).convert("RGB").resize((800, 512))
+            # Set hard limits for 12am to 12am next day
+            ax2.set_xlim(start_of_day, start_of_day + timedelta(days=1))
+            ax2.set_xlabel("Time (Current Day)")
+            ax2.set_ylabel("Temp (°C)")
+            ax2.set_title("Current Day Expected Temperature")
+            ax2.xaxis.set_major_formatter(mdates.DateFormatter('%I %p'))
+            ax2.xaxis.set_major_locator(mdates.HourLocator(interval=3))
+            fig2.autofmt_xdate(rotation=45, ha='right')
+            fig2.tight_layout()
+            buf2 = io.BytesIO()
+            fig2.savefig(buf2, format="png")
+            plt.close(fig2)
+            buf2.seek(0)
+            img_hourly = Image.open(buf2).convert("RGB").resize((800, 512))
     except Exception as e:
         print(f"⚠️  Failed to generate hourly plot: {e}")
 
