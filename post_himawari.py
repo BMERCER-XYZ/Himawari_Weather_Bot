@@ -112,8 +112,8 @@ def estimate_rain_last_24h(observations: list[dict]) -> float | None:
     return round(total, 1)
 
 
-def render_sidebar_panel(title: str, accent_color: tuple[int, int, int], background_color: tuple[int, int, int], items: list[dict]) -> Image.Image:
-    panel = Image.new("RGB", (SIDE_PANEL_WIDTH, ZOOM * TILE_SIZE), background_color)
+def render_sidebar_panel(title: str, accent_color: tuple[int, int, int], background_color: tuple[int, int, int], items: list[dict], height: int) -> Image.Image:
+    panel = Image.new("RGB", (SIDE_PANEL_WIDTH, height), background_color)
     draw = ImageDraw.Draw(panel)
 
     panel_width, panel_height = panel.size
@@ -131,15 +131,16 @@ def render_sidebar_panel(title: str, accent_color: tuple[int, int, int], backgro
 
     draw_centered_text(draw, panel_width / 2, 62, title, title_font, accent_color)
 
-    top = 420
-    bottom = panel_height - 180
+    # Top of content
+    top = int(height * 0.20)
+    bottom = int(height * 0.88)
     usable_height = max(1, bottom - top)
     step = usable_height / max(len(items), 1)
 
     for index, item in enumerate(items):
         y = top + index * step
         if index > 0:
-            divider_y = y - 60
+            divider_y = y - 40
             draw.line((28, divider_y, panel_width - 28, divider_y), fill=(70, 90, 115), width=2)
         draw_centered_text(draw, panel_width / 2, y, item["label"], label_font, dim_color)
         draw_centered_text(draw, panel_width / 2, y + 34, item["value"], value_font, text_color)
@@ -298,7 +299,7 @@ def fetch_tile(url: str) -> Image.Image:
 
 def build_full_disk(timestamp: datetime) -> bytes:
     full_size = ZOOM * TILE_SIZE  # e.g. 4400px for ZOOM=8
-    canvas = Image.new("RGB", (full_size + SIDE_PANEL_WIDTH * 2, full_size), "white")
+    canvas = Image.new("RGB", (full_size, full_size), "black")
 
     total = ZOOM * ZOOM
     print(f"Fetching {total} tiles ({ZOOM}x{ZOOM} grid = {full_size}x{full_size}px)...")
@@ -307,64 +308,11 @@ def build_full_disk(timestamp: datetime) -> bytes:
         for col in range(ZOOM):
             url = get_timestamp_url(timestamp, col, row)
             tile = fetch_tile(url)
-            canvas.paste(tile, (SIDE_PANEL_WIDTH + col * TILE_SIZE, row * TILE_SIZE))
+            canvas.paste(tile, (col * TILE_SIZE, row * TILE_SIZE))
             done = row * ZOOM + col + 1
             print(f"  Tile {done}/{total} ({col},{row})", end="\r")
 
     print()  # newline after progress
-
-    try:
-        weather = fetch_weather(WEATHER_URL)
-        hourly_summary = fetch_hourly_forecast_summary()
-
-        rain_last_24h = estimate_rain_last_24h(weather.get("history", []))
-        current_wind = safe_float(weather.get("wind_spd_kmh"))
-        current_wind_dir = weather.get("wind_dir") or "-"
-
-        left_panel = render_sidebar_panel(
-            "WIND",
-            (76, 142, 255),
-            (12, 25, 45),
-            [
-                {
-                    "label": "Current",
-                    "value": f"{int(current_wind)} km/h" if current_wind is not None else "N/A",
-                    "detail": current_wind_dir,
-                },
-                {
-                    "label": "Low today",
-                    "value": f"{hourly_summary['wind_min']:.0f} km/h" if hourly_summary.get("wind_min") is not None else "N/A",
-                    "detail": "Expected minimum",
-                },
-                {
-                    "label": "High today",
-                    "value": f"{hourly_summary['wind_max']:.0f} km/h" if hourly_summary.get("wind_max") is not None else "N/A",
-                    "detail": "Expected maximum",
-                },
-            ],
-        )
-        right_panel = render_sidebar_panel(
-            "RAIN",
-            (255, 162, 61),
-            (43, 23, 10),
-            [
-                {
-                    "label": "Last 24h",
-                    "value": f"{rain_last_24h:.1f} mm" if rain_last_24h is not None else "N/A",
-                    "detail": "From station history",
-                },
-                {
-                    "label": "Next 24h",
-                    "value": f"{hourly_summary['rain_next_24h']:.1f} mm" if hourly_summary.get("rain_next_24h") is not None else "N/A",
-                    "detail": "Forecast amount",
-                },
-            ],
-        )
-
-        canvas.paste(left_panel, (0, 0))
-        canvas.paste(right_panel, (SIDE_PANEL_WIDTH + full_size, 0))
-    except Exception as e:
-        print(f"⚠️  Failed to render side panels: {e}")
 
     # Compress to fit Discord's 8MB limit, reducing quality if needed
     for quality in [95, 85, 75, 60]:
@@ -415,7 +363,7 @@ def fetch_forecast() -> dict:
     return {"entries": entries}
 
 
-def make_quad_forecast_image(forecast: dict) -> bytes:
+def make_quad_forecast_image(forecast: dict, weather: dict) -> bytes:
     """Return PNG bytes of a 2x2 grid containing the temperature plots and radar images."""
     import matplotlib.pyplot as plt
     import matplotlib.dates as mdates
@@ -528,12 +476,71 @@ def make_quad_forecast_image(forecast: dict) -> bytes:
     radar_now = fetch_radar("IDR463")
     radar_24h = fetch_radar("IDR46D")
 
-    # 4. COMPOSITE 2x2 QUAD
-    quad = Image.new("RGB", (1312, 1024), "white")
-    quad.paste(img_hourly, (0, 0))       # Top Left
-    quad.paste(img_7day, (0, 512))       # Bottom Left
-    quad.paste(radar_now, (800, 0))      # Top Right
-    quad.paste(radar_24h, (800, 512))    # Bottom Right
+    # 4. FETCH EXTRA DATA FOR PANELS
+    try:
+        hourly_summary = fetch_hourly_forecast_summary()
+        rain_last_24h = estimate_rain_last_24h(weather.get("history", []))
+        current_wind = safe_float(weather.get("wind_spd_kmh"))
+        current_wind_dir = weather.get("wind_dir") or "-"
+
+        left_panel = render_sidebar_panel(
+            "WIND",
+            (76, 142, 255),
+            (12, 25, 45),
+            [
+                {
+                    "label": "Current",
+                    "value": f"{int(current_wind)} km/h" if current_wind is not None else "N/A",
+                    "detail": current_wind_dir,
+                },
+                {
+                    "label": "Low today",
+                    "value": f"{hourly_summary['wind_min']:.0f} km/h" if hourly_summary.get("wind_min") is not None else "N/A",
+                    "detail": "Expected minimum",
+                },
+                {
+                    "label": "High today",
+                    "value": f"{hourly_summary['wind_max']:.0f} km/h" if hourly_summary.get("wind_max") is not None else "N/A",
+                    "detail": "Expected maximum",
+                },
+            ],
+            1024
+        )
+        right_panel = render_sidebar_panel(
+            "RAIN",
+            (255, 162, 61),
+            (43, 23, 10),
+            [
+                {
+                    "label": "Last 24h",
+                    "value": f"{rain_last_24h:.1f} mm" if rain_last_24h is not None else "N/A",
+                    "detail": "From station history",
+                },
+                {
+                    "label": "Next 24h",
+                    "value": f"{hourly_summary['rain_next_24h']:.1f} mm" if hourly_summary.get("rain_next_24h") is not None else "N/A",
+                    "detail": "Forecast amount",
+                },
+            ],
+            1024
+        )
+    except Exception as e:
+        print(f"⚠️  Failed to render side panels: {e}")
+        left_panel = Image.new("RGB", (SIDE_PANEL_WIDTH, 1024), (12, 25, 45))
+        right_panel = Image.new("RGB", (SIDE_PANEL_WIDTH, 1024), (43, 23, 10))
+
+    # 5. COMPOSITE 2x2 QUAD + SIDE PANELS
+    quad = Image.new("RGB", (1312 + SIDE_PANEL_WIDTH * 2, 1024), "white")
+    
+    # Left Panel
+    quad.paste(left_panel, (0, 0))
+    # 2x2 Grid
+    quad.paste(img_hourly, (SIDE_PANEL_WIDTH, 0))                 # Top Left
+    quad.paste(img_7day, (SIDE_PANEL_WIDTH, 512))                 # Bottom Left
+    quad.paste(radar_now, (SIDE_PANEL_WIDTH + 800, 0))            # Top Right
+    quad.paste(radar_24h, (SIDE_PANEL_WIDTH + 800, 512))          # Bottom Right
+    # Right Panel
+    quad.paste(right_panel, (SIDE_PANEL_WIDTH + 1312, 0))
     
     out = io.BytesIO()
     quad.save(out, format="PNG")
@@ -571,7 +578,7 @@ def post_to_discord(webhook_url: str, image_bytes: bytes, timestamp: datetime):
                 
             # generate full-image of 2x2 forecast quad
             try:
-                forecast_image = make_quad_forecast_image(fc)
+                forecast_image = make_quad_forecast_image(fc, weather)
             except Exception as ie:
                 print(f"⚠️  Forecast image generation failed: {ie}")
     except Exception as e:
