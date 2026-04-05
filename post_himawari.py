@@ -112,27 +112,32 @@ def estimate_rain_last_24h(observations: list[dict]) -> float | None:
     return round(total, 1)
 
 
-def render_sidebar_panel(title: str, accent_color: tuple[int, int, int], background_color: tuple[int, int, int], items: list[dict], height: int) -> Image.Image:
+def render_sidebar_panel(title: str, items: list[dict], height: int) -> Image.Image:
+    background_color = (255, 255, 255) # White to match the forecast plots
     panel = Image.new("RGB", (SIDE_PANEL_WIDTH, height), background_color)
     draw = ImageDraw.Draw(panel)
 
     panel_width, panel_height = panel.size
-    draw.rectangle((0, 0, 7, panel_height), fill=accent_color)
-    draw.rectangle((panel_width - 7, 0, panel_width, panel_height), fill=accent_color)
-    draw.rounded_rectangle((10, 10, panel_width - 10, panel_height - 10), radius=24, outline=accent_color, width=3)
+    
+    # Outer border
+    draw.rectangle((0, 0, panel_width - 1, panel_height - 1), outline=(220, 220, 220), width=1)
 
     title_font = load_font(32, bold=True)
     label_font = load_font(18, bold=True)
     value_font = load_font(36, bold=True)
     detail_font = load_font(16)
 
-    text_color = (245, 247, 250)
-    dim_color = (205, 214, 225)
+    title_color = (60, 60, 60)
+    text_color = (20, 20, 20)
+    dim_color = (120, 120, 120)
 
-    draw_centered_text(draw, panel_width / 2, 62, title, title_font, accent_color)
+    draw_centered_text(draw, panel_width / 2, 50, title, title_font, title_color)
+    
+    # Separator under title
+    draw.line((40, 100, panel_width - 40, 100), fill=(220, 220, 220), width=2)
 
     # Top of content
-    top = int(height * 0.20)
+    top = int(height * 0.18)
     bottom = int(height * 0.88)
     usable_height = max(1, bottom - top)
     step = usable_height / max(len(items), 1)
@@ -140,17 +145,17 @@ def render_sidebar_panel(title: str, accent_color: tuple[int, int, int], backgro
     for index, item in enumerate(items):
         y = top + index * step
         if index > 0:
-            divider_y = y - 40
-            draw.line((28, divider_y, panel_width - 28, divider_y), fill=(70, 90, 115), width=2)
+            divider_y = y - 30
+            draw.line((40, divider_y, panel_width - 40, divider_y), fill=(235, 235, 235), width=1)
         draw_centered_text(draw, panel_width / 2, y, item["label"], label_font, dim_color)
-        draw_centered_text(draw, panel_width / 2, y + 34, item["value"], value_font, text_color)
+        draw_centered_text(draw, panel_width / 2, y + 32, str(item["value"]), value_font, text_color)
         if item.get("detail"):
-            draw_centered_text(draw, panel_width / 2, y + 90, item["detail"], detail_font, dim_color)
+            draw_centered_text(draw, panel_width / 2, y + 80, item["detail"], detail_font, dim_color)
 
     footer = items[-1].get("footer") if items else None
     if footer:
         footer_font = load_font(14)
-        draw_centered_text(draw, panel_width / 2, panel_height - 70, footer, footer_font, dim_color)
+        draw_centered_text(draw, panel_width / 2, panel_height - 50, footer, footer_font, dim_color)
 
     return panel
 
@@ -485,8 +490,6 @@ def make_quad_forecast_image(forecast: dict, weather: dict) -> bytes:
 
         left_panel = render_sidebar_panel(
             "WIND",
-            (76, 142, 255),
-            (12, 25, 45),
             [
                 {
                     "label": "Current",
@@ -508,8 +511,6 @@ def make_quad_forecast_image(forecast: dict, weather: dict) -> bytes:
         )
         right_panel = render_sidebar_panel(
             "RAIN",
-            (255, 162, 61),
-            (43, 23, 10),
             [
                 {
                     "label": "Last 24h",
@@ -526,8 +527,8 @@ def make_quad_forecast_image(forecast: dict, weather: dict) -> bytes:
         )
     except Exception as e:
         print(f"⚠️  Failed to render side panels: {e}")
-        left_panel = Image.new("RGB", (SIDE_PANEL_WIDTH, 1024), (12, 25, 45))
-        right_panel = Image.new("RGB", (SIDE_PANEL_WIDTH, 1024), (43, 23, 10))
+        left_panel = Image.new("RGB", (SIDE_PANEL_WIDTH, 1024), "white")
+        right_panel = Image.new("RGB", (SIDE_PANEL_WIDTH, 1024), "white")
 
     # 5. COMPOSITE 2x2 QUAD + SIDE PANELS
     quad = Image.new("RGB", (1312 + SIDE_PANEL_WIDTH * 2, 1024), "white")
