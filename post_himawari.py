@@ -211,6 +211,10 @@ def fetch_hourly_forecast_summary(location_id: str = HOURLY_FORECAST_LOCATION_ID
 
     wind_speeds = []
     rain_next_24h = 0.0
+    
+    next_rain_dt = None
+    next_rain_amount = 0.0
+
     for entry in data.get("data", []):
         dt = parse_utc_timestamp(entry.get("time"))
         if dt is None:
@@ -223,8 +227,20 @@ def fetch_hourly_forecast_summary(location_id: str = HOURLY_FORECAST_LOCATION_ID
             if isinstance(wind_speed, (int, float)):
                 wind_speeds.append(wind_speed)
 
+        rain = entry.get("rain", {})
+        
+        # Check for first instance of expected rain across all available hourly data
+        if current_time <= local_dt and next_rain_dt is None:
+            chance = rain.get("chance", 0)
+            amount_min = rain.get("amount", {}).get("min") or 0
+            amount_max = rain.get("amount", {}).get("max") or 0
+            
+            if chance >= 30 or amount_min > 0 or (amount_max and amount_max > 0.5):
+                next_rain_dt = local_dt
+                next_rain_amount = amount_min if amount_min > 0 else (amount_max if amount_max else 0)
+
+        # Accumulate only for next 24h
         if current_time <= local_dt < current_time + timedelta(days=1):
-            rain = entry.get("rain", {})
             rain_value = rain.get("precipitation_amount_50_percent_chance")
             if rain_value is None:
                 amount = rain.get("amount", {})
@@ -239,6 +255,9 @@ def fetch_hourly_forecast_summary(location_id: str = HOURLY_FORECAST_LOCATION_ID
         "wind_min": min(wind_speeds) if wind_speeds else None,
         "wind_max": max(wind_speeds) if wind_speeds else None,
         "rain_next_24h": round(rain_next_24h, 1),
+        "next_rain_dt": next_rain_dt.isoformat() if next_rain_dt else None,
+        "next_rain_amount": next_rain_amount,
+        "current_time": current_time.isoformat(),
     }
 
 
@@ -579,6 +598,22 @@ def make_quad_forecast_image(forecast: dict, weather: dict) -> bytes:
         left_panel.paste(temp_panel, (0, 0))
         left_panel.paste(wind_panel, (0, 512))
 
+        next_rain_val = "None soon"
+        next_rain_det = "In the next 7 days"
+        if hourly_summary.get("next_rain_dt"):
+            n_dt = datetime.fromisoformat(hourly_summary["next_rain_dt"])
+            curr = datetime.fromisoformat(hourly_summary["current_time"]).date()
+            days_away = (n_dt.date() - curr).days
+            if days_away == 0:
+                next_rain_val = f"At {n_dt.strftime('%I %p').lstrip('0')}"
+                next_rain_det = "Expected today"
+            elif days_away == 1:
+                next_rain_val = f"At {n_dt.strftime('%I %p').lstrip('0')}"
+                next_rain_det = "Expected tomorrow"
+            else:
+                next_rain_val = n_dt.strftime("%A")
+                next_rain_det = f"In {days_away} days"
+
         rain_panel = render_sidebar_panel(
             "RAIN",
             [
@@ -591,6 +626,11 @@ def make_quad_forecast_image(forecast: dict, weather: dict) -> bytes:
                     "label": "Next 24h",
                     "value": f"{hourly_summary['rain_next_24h']:.1f} mm" if hourly_summary.get("rain_next_24h") is not None else "N/A",
                     "detail": "Forecast amount",
+                },
+                {
+                    "label": "Next Rain",
+                    "value": next_rain_val,
+                    "detail": next_rain_det,
                 },
             ],
             512
