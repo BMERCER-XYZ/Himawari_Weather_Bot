@@ -488,7 +488,42 @@ def make_quad_forecast_image(forecast: dict, weather: dict) -> bytes:
         current_wind = safe_float(weather.get("wind_spd_kmh"))
         current_wind_dir = weather.get("wind_dir") or "-"
 
-        left_panel = render_sidebar_panel(
+        temps_today = hourly_summary.get("temps", [])
+        hours_today = hourly_summary.get("hours", [])
+        max_t = min_t = max_time = min_time = None
+        if temps_today and len(temps_today) == len(hours_today):
+            max_t = max(temps_today)
+            min_t = min(temps_today)
+            max_idx = temps_today.index(max_t)
+            min_idx = temps_today.index(min_t)
+            max_time = hours_today[max_idx].strftime("%I %p").lstrip("0")
+            min_time = hours_today[min_idx].strftime("%I %p").lstrip("0")
+
+        current_temp = safe_float(weather.get("air_temp"))
+
+        temp_panel = render_sidebar_panel(
+            "TEMP",
+            [
+                {
+                    "label": "Current",
+                    "value": f"{current_temp:.1f}°C" if current_temp is not None else "N/A",
+                    "detail": "Measured now",
+                },
+                {
+                    "label": "High today",
+                    "value": f"{max_t:.1f}°C" if max_t is not None else "N/A",
+                    "detail": f"Around {max_time}" if max_time else "Expected maximum",
+                },
+                {
+                    "label": "Low today",
+                    "value": f"{min_t:.1f}°C" if min_t is not None else "N/A",
+                    "detail": f"Around {min_time}" if min_time else "Expected minimum",
+                },
+            ],
+            512
+        )
+
+        wind_panel = render_sidebar_panel(
             "WIND",
             [
                 {
@@ -507,8 +542,13 @@ def make_quad_forecast_image(forecast: dict, weather: dict) -> bytes:
                     "detail": "Expected maximum",
                 },
             ],
-            1024
+            512
         )
+
+        left_panel = Image.new("RGB", (SIDE_PANEL_WIDTH, 1024), "white")
+        left_panel.paste(temp_panel, (0, 0))
+        left_panel.paste(wind_panel, (0, 512))
+
         right_panel = render_sidebar_panel(
             "RAIN",
             [
