@@ -368,6 +368,36 @@ def fetch_forecast() -> dict:
     return {"entries": entries}
 
 
+def get_moon_status(date_obj: datetime) -> tuple[str, int, int, int]:
+    import math
+    lunar_days = 29.53058770576
+    known_new_moon = datetime(2000, 1, 6, 18, 14)
+    days_since = (date_obj - known_new_moon).total_seconds() / 86400.0
+    phase = days_since % lunar_days
+    
+    illumination = round((1 - math.cos(2 * math.pi * phase / lunar_days)) / 2 * 100)
+    
+    if phase < 1.84: name = "New Moon"
+    elif phase < 5.53: name = "Waxing Crescent"
+    elif phase < 9.22: name = "First Quarter"
+    elif phase < 12.91: name = "Waxing Gibbous"
+    elif phase < 16.61: name = "Full Moon"
+    elif phase < 20.30: name = "Waning Gibbous"
+    elif phase < 23.99: name = "Last Quarter"
+    elif phase < 27.68: name = "Waning Crescent"
+    else: name = "New Moon"
+    
+    days_to_new = round(lunar_days - phase) % round(lunar_days)
+    
+    full_moon_phase = lunar_days / 2
+    if phase <= full_moon_phase:
+        days_to_full = round(full_moon_phase - phase)
+    else:
+        days_to_full = round(lunar_days - phase + full_moon_phase)
+        
+    return name, illumination, int(days_to_new), int(days_to_full)
+
+
 def make_quad_forecast_image(forecast: dict, weather: dict) -> bytes:
     """Return PNG bytes of a 2x2 grid containing the temperature plots and radar images."""
     import matplotlib.pyplot as plt
@@ -549,7 +579,7 @@ def make_quad_forecast_image(forecast: dict, weather: dict) -> bytes:
         left_panel.paste(temp_panel, (0, 0))
         left_panel.paste(wind_panel, (0, 512))
 
-        right_panel = render_sidebar_panel(
+        rain_panel = render_sidebar_panel(
             "RAIN",
             [
                 {
@@ -563,8 +593,36 @@ def make_quad_forecast_image(forecast: dict, weather: dict) -> bytes:
                     "detail": "Forecast amount",
                 },
             ],
-            1024
+            512
         )
+
+        moon_name, moon_ill, days_to_new, days_to_full = get_moon_status(datetime.now(timezone.utc).replace(tzinfo=None))
+        moon_panel = render_sidebar_panel(
+            "MOON",
+            [
+                {
+                    "label": "Current Phase",
+                    "value": f"{moon_ill}%",
+                    "detail": moon_name,
+                },
+                {
+                    "label": "Next Full Moon",
+                    "value": f"In {days_to_full}d" if days_to_full > 0 else "Today",
+                    "detail": "",
+                },
+                {
+                    "label": "Next New Moon",
+                    "value": f"In {days_to_new}d" if days_to_new > 0 else "Today",
+                    "detail": "",
+                },
+            ],
+            512
+        )
+
+        right_panel = Image.new("RGB", (SIDE_PANEL_WIDTH, 1024), "white")
+        right_panel.paste(rain_panel, (0, 0))
+        right_panel.paste(moon_panel, (0, 512))
+
     except Exception as e:
         print(f"⚠️  Failed to render side panels: {e}")
         left_panel = Image.new("RGB", (SIDE_PANEL_WIDTH, 1024), "white")
