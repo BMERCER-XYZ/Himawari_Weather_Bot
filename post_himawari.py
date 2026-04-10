@@ -687,10 +687,11 @@ def make_quad_forecast_image(forecast: dict, weather: dict) -> bytes:
     return out.read()
 
 
-def post_to_discord(webhook_url: str, image_bytes: bytes, timestamp: datetime):
+def post_to_discord(webhook_url: str, image_bytes: bytes | None, timestamp: datetime):
     import json
     time_str = timestamp.strftime("%Y-%m-%d %H:%M UTC")
-    size_mb = len(image_bytes) / 1024 / 1024
+    image_available = image_bytes is not None
+    size_mb = (len(image_bytes) / 1024 / 1024) if image_available else 0.0
 
     # grab weather information; if it fails we'll let the exception bubble up
     weather = fetch_weather(WEATHER_URL)
@@ -734,24 +735,33 @@ def post_to_discord(webhook_url: str, image_bytes: bytes, timestamp: datetime):
         f"gusts {weather.get('gust_kmh','-')} km/h"
     )
 
+    embed = {
+        "title": "Himawari Weather Bot 🌐",
+        "description": (
+            f"{weather_str}{forecast_str}"
+        ),
+        "color": 0x1a73e8,
+        "url": "https://himawari8.nict.go.jp/en/himawari8-image.htm"
+    }
+
+    if image_available:
+        embed["image"] = {"url": "attachment://himawari.jpg"}
+        embed["footer"] = {"text": f"Source: NICT Himawari Monitor • {size_mb:.1f}MB"}
+    elif forecast_image:
+        embed["image"] = {"url": "attachment://forecast.png"}
+        embed["footer"] = {"text": "Source: BOM observations/forecasts • Himawari image unavailable"}
+    else:
+        embed["footer"] = {"text": "Source: BOM observations/forecasts • Himawari image unavailable"}
+
     payload = {
         "username": "Himawari Weather Bot 🌐",
         "avatar_url": "https://himawari8.nict.go.jp/favicon.ico",
-        "embeds": [
-            {
-                "title": "Himawari Weather Bot 🌐",
-                "description": (
-                    f"{weather_str}{forecast_str}"
-                ),
-                "image": {"url": "attachment://himawari.jpg"},
-                "color": 0x1a73e8,
-                "footer": {"text": f"Source: NICT Himawari Monitor • {size_mb:.1f}MB"},
-                "url": "https://himawari8.nict.go.jp/en/himawari8-image.htm"
-            }
-        ]
+        "embeds": [embed]
     }
 
-    files = {"file": ("himawari.jpg", image_bytes, "image/jpeg")}
+    files = {}
+    if image_available:
+        files["file"] = ("himawari.jpg", image_bytes, "image/jpeg")
     if forecast_image:
         files["forecast"] = ("forecast.png", forecast_image, "image/png")
 
@@ -776,12 +786,19 @@ def post_to_discord(webhook_url: str, image_bytes: bytes, timestamp: datetime):
     # 2. Post the new message (Note the wait=true param to get the message object back)
     post_url = f"{webhook_url}&wait=true" if "?" in webhook_url else f"{webhook_url}?wait=true"
 
-    response = session.post(
-        post_url,
-        data={"payload_json": json.dumps(payload)},
-        files=files,
-        timeout=60
-    )
+    if files:
+        response = session.post(
+            post_url,
+            data={"payload_json": json.dumps(payload)},
+            files=files,
+            timeout=60
+        )
+    else:
+        response = session.post(
+            post_url,
+            json=payload,
+            timeout=60
+        )
     response.raise_for_status()
 
     # 3. Save the new message ID for next time
@@ -804,8 +821,14 @@ def main():
         print("❌ Error: DISCORD_WEBHOOK_URL environment variable not set.")
         sys.exit(1)
 
-    timestamp = find_valid_timestamp()
-    image_bytes = build_full_disk(timestamp)
+    timestamp = datetime.now(timezone.utc)
+    image_bytes = None
+    try:
+        timestamp = find_valid_timestamp()
+        image_bytes = build_full_disk(timestamp)
+    except Exception as e:
+        print(f"⚠️  Himawari image unavailable, posting weather data only: {e}")
+
     post_to_discord(webhook_url, image_bytes, timestamp)
 
 
